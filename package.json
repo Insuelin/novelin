@@ -15,6 +15,7 @@
   "dependencies": {
     "dompurify": "^3.4.17",
     "express": "^4.21.2",
+    "katex": "^0.19.1",
     "marked": "^18.1.2"
   },
   "devDependencies": {

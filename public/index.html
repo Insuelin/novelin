@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NOVELIN — AI Narrative Terminal</title>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/vendor/katex/katex.min.css">
 </head>
 <body>
 <div class="bg" aria-hidden="true">
@@ -112,7 +113,6 @@
       </div>
       <div class="desk-actions">
         <span class="save-state" id="save-state">SAVED</span>
-        <button class="btn ghost small" id="back-btn" type="button">← LIBRARY</button>
       </div>
     </div>
 
@@ -146,7 +146,6 @@
       <div class="ms-wrap">
         <div class="ms-scene" aria-hidden="true"><i class="b1"></i><i class="b2"></i><i class="b3"></i><span class="line l1"></span><span class="line l2"></span></div>
         <section class="manuscript">
-          <div class="glass-glare"></div>
           <div class="ms-sticky">
           <div class="ms-head">
             <div class="chapter-nav" id="chapter-nav">
@@ -156,7 +155,10 @@
               </button>
               <div class="chapter-menu" id="chapter-menu" role="listbox" hidden></div>
             </div>
-            <h2 id="ms-title">—</h2>
+            <div class="ms-title-wrap">
+              <h2 id="ms-title" tabindex="0" role="button" title="点击编辑书名">—</h2>
+              <input id="ms-title-input" class="ms-title-input" type="text" maxlength="200" aria-label="书名" hidden>
+            </div>
             <div class="ms-meta"><span id="ms-words">0 字</span><br><span id="ms-mode-label">READ</span></div>
           </div>
           <div class="ms-toolbar">
@@ -167,6 +169,17 @@
             <button class="btn ghost small" id="save-manuscript" type="button" hidden>SAVE</button>
             <span class="hint">Ctrl+S 保存 · 选中正文可准备改写</span>
           </div>
+          <div class="review-bar" id="review-bar" hidden>
+            <div class="review-state">
+              <span class="dot"></span>
+              <span class="review-label" id="review-label">AI DIFF</span>
+            </div>
+            <div class="review-actions">
+              <button class="btn ghost small" type="button" id="review-stop" hidden>STOP</button>
+              <button class="btn danger small" type="button" data-review-action="reject" hidden>拒绝 / REJECT</button>
+              <button class="btn small" type="button" data-review-action="accept" hidden>写入 / APPLY</button>
+            </div>
+          </div>
           </div>
           <article id="prose" class="prose"></article>
           <textarea id="manuscript-editor" class="manuscript-editor" hidden spellcheck="false" placeholder="从这里开始写，或者让 AI 写下一章。"></textarea>
@@ -174,8 +187,14 @@
             <span id="selection-info">SELECTED · 0 字</span>
             <div class="acts"><button class="text-btn" id="selection-revise" type="button">AI 改写选中</button></div>
           </div>
-          <div class="ms-corner"></div>
         </section>
+        <div class="ms-chrome" aria-hidden="true">
+          <div class="ms-glass" id="ms-glass">
+            <div class="glass-glare"></div>
+            <div class="ms-noise"></div>
+          </div>
+          <div class="ms-corner"></div>
+        </div>
       </div>
 
       <aside class="panel console">
@@ -200,12 +219,7 @@
             <span class="agent-note" id="ai-note">READY</span>
             <button class="btn danger small" type="button" id="ai-stop" hidden>STOP</button>
           </div>
-          <div class="agent-stream" id="ai-stream" hidden>
-            <div class="stream-head"><span>STREAM / 输出</span><button class="text-btn" type="button" id="ai-copy">COPY</button></div>
-            <pre id="ai-stream-text"></pre>
-          </div>
-          <div class="proposal" id="ai-proposal" hidden></div>
-          <div class="log" id="ai-log" aria-live="polite"></div>
+          <p class="agent-hint">DIFF 模式的改动会直接显示在中间正文里。</p>
         </div>
       </aside>
     </div>

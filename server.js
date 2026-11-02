@@ -277,6 +277,9 @@ export function createApp({ dataDir, aiClient } = {}) {
     }
   });
 
+  const katexDir = path.join(__dirname, 'node_modules', 'katex', 'dist');
+  app.use('/vendor/katex', express.static(katexDir));
+
   const publicDir = path.join(__dirname, 'public');
   app.use(express.static(publicDir));
 

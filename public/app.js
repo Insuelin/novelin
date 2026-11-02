@@ -1,5 +1,31 @@
 import { marked } from './vendor/marked.esm.js';
 import DOMPurify from './vendor/purify.es.js';
+import katex from '/vendor/katex/katex.mjs';
+import renderMathInElement from '/vendor/katex/contrib/auto-render.mjs';
+
+const MATH_BLOCK_RE = /^(?:\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\])[ \t]*(?:\n|$)/;
+
+marked.use({
+  extensions: [{
+    name: 'mathBlock',
+    level: 'block',
+    start(src) {
+      return src.search(/\$\$|\\\[/);
+    },
+    tokenizer(src) {
+      const match = MATH_BLOCK_RE.exec(src);
+      if (!match) return undefined;
+      return {
+        type: 'mathBlock',
+        raw: match[0],
+        text: (match[1] ?? match[2] ?? '').trim(),
+      };
+    },
+    renderer(token) {
+      return `<div class="math-block" data-tex="${escapeHtml(token.text)}"></div>\n`;
+    },
+  }],
+});
 
 const API = '/api';
 const ACCENT_KEY = 'novelin.accent';
@@ -18,6 +44,9 @@ const state = {
   results: [],
   accent: 'amber',
   manuscriptMode: 'read',
+  titleEditing: false,
+  titleDirty: false,
+  loadedHeading: '',
   dirty: new Set(),
   saving: new Set(),
   saveAgain: new Set(),
@@ -40,8 +69,10 @@ const state = {
   aiAbort: null,
   aiMode: 'diff',
   aiBookId: '',
-  aiStreamText: '',
   aiProposal: null,
+  aiReview: null,
+  aiDraftTimer: null,
+  stickyObserver: null,
 };
 
 /* ---------- helpers ---------- */
@@ -63,6 +94,17 @@ function countWords(text) {
   return Array.from(String(text || '').replace(/[\s　]/g, '')).length;
 }
 
+function getManuscriptTitle(manuscript) {
+  const source = String(manuscript || '');
+  const match = source.match(/^(#{1,2})\s+(.+)$/m);
+  if (!match || match[1].length !== 1) return null;
+  return {
+    title: match[2].trim(),
+    start: match.index,
+    end: match.index + match[0].length,
+  };
+}
+
 function parseChapterEntries(manuscript, bookTitle = '') {
   const source = String(manuscript || '');
   if (!source.trim()) return [];
@@ -73,11 +115,9 @@ function parseChapterEntries(manuscript, bookTitle = '') {
     start: match.index,
   }));
 
+  const title = getManuscriptTitle(source);
   let entries = headings;
-  const cleanTitle = String(bookTitle || '').trim();
-  if (entries.length > 1 && cleanTitle && entries[0].level === 1 && entries[0].title === cleanTitle) {
-    entries = entries.slice(1);
-  }
+  if (title) entries = entries.filter((entry) => entry.start !== title.start);
   if (!entries.length) entries = [{ level: 0, title: '正文', start: 0 }];
   return entries;
 }
@@ -427,6 +467,160 @@ async function openSearchResult(result) {
 }
 
 /* ---------- workspace ---------- */
+function updateTitleDisplay() {
+  const book = state.current;
+  const element = $('#ms-title');
+  if (!book || !element) return;
+  const title = getManuscriptTitle(book.manuscript)?.title || book.meta.title || '—';
+  if (!state.titleEditing) element.textContent = title;
+  element.title = title;
+}
+
+function startTitleEdit() {
+  const book = state.current;
+  const heading = $('#ms-title');
+  const input = $('#ms-title-input');
+  if (!book || !heading || !input || state.titleEditing || state.manuscriptMode === 'edit') return;
+
+  state.titleEditing = true;
+  input.value = getManuscriptTitle(book.manuscript)?.title || book.meta.title || '';
+  heading.hidden = true;
+  input.hidden = false;
+  input.focus();
+  input.select();
+}
+
+function stopTitleEdit({ restore = true } = {}) {
+  state.titleEditing = false;
+  const input = $('#ms-title-input');
+  const heading = $('#ms-title');
+  if (input) {
+    input.hidden = true;
+    input.value = '';
+  }
+  if (heading) heading.hidden = false;
+  if (restore) updateTitleDisplay();
+}
+
+async function commitTitleEdit() {
+  if (!state.titleEditing) return;
+
+  const book = state.current;
+  const input = $('#ms-title-input');
+  const heading = $('#ms-title');
+  if (!book || !input) {
+    stopTitleEdit();
+    return;
+  }
+
+  const nextTitle = input.value.trim();
+  if (!nextTitle) {
+    toast('书名不能为空', 'error');
+    input.focus();
+    return;
+  }
+
+  const info = getManuscriptTitle(book.manuscript);
+  const currentTitle = info?.title || book.meta.title || '';
+  if (nextTitle === currentTitle && nextTitle === book.meta.title) {
+    stopTitleEdit();
+    return;
+  }
+
+  const nextManuscript = info
+    ? book.manuscript.slice(0, info.start) + `# ${nextTitle}` + book.manuscript.slice(info.end)
+    : book.manuscript;
+  const bookId = book.meta.id;
+
+  state.titleEditing = false;
+  if (input) {
+    input.blur();
+    input.hidden = true;
+  }
+  if (heading) heading.hidden = false;
+  setSaveState('SAVING', '');
+
+  let manuscriptSaved = false;
+  try {
+    let stats = book.stats || { words: 0, chapters: 0 };
+    if (nextManuscript !== book.manuscript) {
+      const result = await api(`/books/${encodeURIComponent(bookId)}/manuscript`, {
+        method: 'PUT',
+        body: { content: nextManuscript },
+      });
+      stats = {
+        words: Number(result.words) || 0,
+        chapters: Number(result.chapters) || 0,
+      };
+      if (state.current?.meta.id === bookId) {
+        state.current.manuscript = nextManuscript;
+        state.current.stats = stats;
+        manuscriptSaved = true;
+        updateTitleDisplay();
+        $('#ms-words').textContent = `${formatNumber(stats.words)} 字`;
+        const editor = $('#manuscript-editor');
+        if (editor) editor.value = nextManuscript;
+        refreshChapterNav();
+      }
+    }
+
+    const { meta } = await api(`/books/${encodeURIComponent(bookId)}/meta`, {
+      method: 'PUT',
+      body: { title: nextTitle },
+    });
+    if (state.current?.meta.id !== bookId) return;
+
+    state.current.meta = meta;
+    state.titleDirty = false;
+    state.loadedHeading = nextTitle;
+    stopTitleEdit({ restore: false });
+    updateTitleDisplay();
+    const proseTitle = $('#prose h1.ms-book-title');
+    if (proseTitle) proseTitle.textContent = nextTitle;
+    $('#ws-breadcrumb').textContent = meta.title;
+    updateBookSummary(bookId);
+    setSaveState('SAVED', 'ok');
+  } catch (err) {
+    setSaveState('SAVE FAILED', 'error');
+    if (manuscriptSaved) {
+      state.titleDirty = true;
+      toast(`正文标题已保存，书名没保存：${err.message}`, 'error');
+      stopTitleEdit({ restore: false });
+      updateTitleDisplay();
+    } else {
+      toast(err.message || '书名保存失败', 'error');
+      stopTitleEdit();
+    }
+  }
+}
+
+async function syncMetaFromManuscript(bookId) {
+  const book = state.current;
+  if (!book || book.meta.id !== bookId || !state.titleDirty) return;
+
+  const info = getManuscriptTitle(book.manuscript);
+  if (!info?.title || info.title === book.meta.title) {
+    state.titleDirty = false;
+    return;
+  }
+
+  try {
+    const { meta } = await api(`/books/${encodeURIComponent(bookId)}/meta`, {
+      method: 'PUT',
+      body: { title: info.title },
+    });
+    if (state.current?.meta.id !== bookId) return;
+    state.current.meta = meta;
+    state.titleDirty = false;
+    state.loadedHeading = info.title;
+    $('#ws-breadcrumb').textContent = meta.title;
+    updateTitleDisplay();
+    updateBookSummary(bookId);
+  } catch (err) {
+    toast(`书名同步失败：${err.message}`, 'error');
+  }
+}
+
 function renderWorkspace() {
   const book = state.current;
   if (!book) {
@@ -435,15 +629,26 @@ function renderWorkspace() {
   }
 
   closeChapterMenu();
+  if (state.aiBookId && state.aiBookId !== book.meta.id) clearReview({ render: false });
   const stats = book.stats || { words: 0, chapters: 0 };
   const aiLabel = book.meta.aiEnabled
     ? `AI ${String(book.meta.aiMode || 'diff').toUpperCase()}`
     : 'READ ONLY';
 
   state.currentChapter = 0;
+  state.titleEditing = false;
+  state.titleDirty = false;
+  state.loadedHeading = getManuscriptTitle(book.manuscript)?.title || '';
+  const titleInput = $('#ms-title-input');
+  if (titleInput) {
+    titleInput.hidden = true;
+    titleInput.value = '';
+  }
+  const titleElement = $('#ms-title');
+  if (titleElement) titleElement.hidden = false;
   $('#ws-breadcrumb').textContent = book.meta.title;
   $('#ws-status').textContent = aiLabel;
-  $('#ms-title').textContent = book.meta.title;
+  updateTitleDisplay();
   $('#ms-words').textContent = `${formatNumber(stats.words)} 字`;
   $('#theme-editor').value = book.meta.theme || '';
   $('#outline-editor').value = book.outline || '';
@@ -457,6 +662,136 @@ function renderWorkspace() {
   hideSelection();
   renderAgent();
   applyPendingSearch();
+  requestAnimationFrame(syncStickyHeight);
+}
+
+function syncStickyHeight() {
+  const sticky = $('.ms-sticky');
+  const chrome = $('.ms-chrome');
+  if (!sticky || !chrome) return;
+  const height = Math.max(0, Math.round(sticky.getBoundingClientRect().height));
+  chrome.style.setProperty('--ms-sticky-h', `${height}px`);
+}
+
+function isNearBottom(element, distance = 180) {
+  if (!element) return false;
+  return element.scrollHeight - element.scrollTop - element.clientHeight < distance;
+}
+
+function scrollManuscriptToEnd() {
+  const manuscript = $('.manuscript');
+  if (manuscript) manuscript.scrollTop = manuscript.scrollHeight;
+}
+
+function scrollToPendingChapter() {
+  const manuscript = $('.manuscript');
+  const section = $('#ai-pending-chapter');
+  if (!manuscript || !section) return;
+  const sticky = $('.ms-sticky')?.getBoundingClientRect().height || 0;
+  const top = manuscript.scrollTop
+    + section.getBoundingClientRect().top
+    - manuscript.getBoundingClientRect().top
+    - sticky
+    - 10;
+  manuscript.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+}
+
+function scrollToReviewChange(last = false) {
+  const manuscript = $('.manuscript');
+  if (!manuscript) return;
+  const marks = $$('#prose .ai-del, #prose .ai-ins, #prose .ai-change-block');
+  if (!marks.length) return;
+  const target = last ? marks[marks.length - 1] : marks[0];
+  const sticky = $('.ms-sticky')?.getBoundingClientRect().height || 0;
+  const top = manuscript.scrollTop
+    + target.getBoundingClientRect().top
+    - manuscript.getBoundingClientRect().top
+    - sticky
+    - 16;
+  manuscript.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+}
+
+function reviewChangeHtml(change) {
+  const oldText = String(change.old || '');
+  const newText = String(change.new || '');
+  const blockLevel = /[\r\n]/.test(oldText) || /[\r\n]/.test(newText)
+    || oldText.length + newText.length > 1600;
+
+  if (blockLevel) {
+    return `<div class="ai-change-block">
+      <div class="ai-old"><span class="ai-diff-label">OLD / 原文</span>${marked.parse(oldText, { breaks: true, gfm: true })}</div>
+      <div class="ai-new"><span class="ai-diff-label">NEW / 改写</span>${marked.parse(newText, { breaks: true, gfm: true })}</div>
+    </div>`;
+  }
+
+  const oldHtml = oldText ? `<del class="ai-del">${escapeHtml(oldText)}</del>` : '';
+  const newHtml = newText ? `<ins class="ai-ins">${marked.parseInline(newText)}</ins>` : '';
+  return `${oldHtml}${newHtml}`;
+}
+
+function buildReviewSource(review) {
+  let source = '';
+  let cursor = 0;
+  const changes = [...(review.changes || [])].sort((a, b) => a.start - b.start);
+  for (const change of changes) {
+    if (change.start < cursor) continue;
+    source += review.text.slice(cursor, change.start);
+    source += reviewChangeHtml(change);
+    cursor = Math.max(cursor, change.end);
+  }
+  source += review.text.slice(cursor);
+  return source;
+}
+
+function renderPendingChapter(review) {
+  if (!review || review.action !== 'chapter') return '';
+  const body = review.draft.trim()
+    ? marked.parse(review.draft, { breaks: true, gfm: true })
+    : '<p class="ai-pending-empty">AI 正在写下一章…</p>';
+  return `<section class="ai-pending-chapter" id="ai-pending-chapter">
+    <div class="ai-pending-head"><span>PENDING CHAPTER / 待确认</span><span>${review.draftFinal ? 'READY' : 'STREAMING'}</span></div>
+    <div class="ai-pending-body" id="ai-pending-body">${body}</div>
+    ${review.draftFinal ? '' : '<span class="ai-pending-cursor" aria-hidden="true"></span>'}
+  </section>`;
+}
+
+const MATH_DELIMITERS = [
+  { left: '$$', right: '$$', display: true },
+  { left: '\\[', right: '\\]', display: true },
+  { left: '\\(', right: '\\)', display: false },
+  { left: '$', right: '$', display: false },
+];
+
+function renderBlockMath(root) {
+  if (!root) return;
+  $$('.math-block', root).forEach((element) => {
+    const tex = element.dataset.tex || '';
+    try {
+      element.innerHTML = katex.renderToString(tex, {
+        displayMode: true,
+        throwOnError: false,
+        strict: false,
+        errorColor: 'rgba(255,85,68,.9)',
+      });
+    } catch {
+      element.textContent = tex;
+    }
+  });
+}
+
+function renderMath(root) {
+  if (!root) return;
+  try {
+    renderMathInElement(root, {
+      delimiters: MATH_DELIMITERS,
+      throwOnError: false,
+      strict: false,
+      errorColor: 'rgba(255,85,68,.9)',
+      ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code', 'option'],
+    });
+  } catch (err) {
+    console.warn('KaTeX render failed', err);
+  }
 }
 
 function renderProse() {
@@ -464,23 +799,43 @@ function renderProse() {
   if (!book) return;
 
   const prose = $('#prose');
-  const source = book.manuscript || '';
+  const review = state.aiReview;
+  const source = review ? buildReviewSource(review) : (book.manuscript || '');
 
-  if (!source.trim()) {
+  if (!source.trim() && !review) {
     prose.innerHTML = '<div class="prose-empty">正文还是空的。切到 EDIT 写第一段，或者等 AI 写下一章。</div>';
     state.chapterEls = [];
     refreshChapterNav();
     return;
   }
 
-  const html = marked.parse(source, { breaks: true, gfm: true });
-  prose.innerHTML = DOMPurify.sanitize(html);
+  const html = [];
+  if (review?.notice) {
+    html.push(`<div class="ai-review-note">${escapeHtml(review.notice)}</div>`);
+  }
+  if (source.trim()) {
+    html.push(marked.parse(source, { breaks: true, gfm: true }));
+  }
+  if (review) html.push(renderPendingChapter(review));
+  prose.innerHTML = DOMPurify.sanitize(html.join(''));
+  renderBlockMath(prose);
+  renderMath(prose);
+
   $$('a', prose).forEach((link) => {
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
   });
 
-  const allHeadings = $$('#prose h1, #prose h2');
+  if (getManuscriptTitle(source)) {
+    const firstH1 = prose.querySelector('h1');
+    if (firstH1) {
+      firstH1.hidden = true;
+      firstH1.classList.add('ms-book-title');
+    }
+  }
+
+  const allHeadings = $$('#prose h1, #prose h2')
+    .filter((element) => !element.closest('.ai-pending-chapter') && !element.classList.contains('ms-book-title'));
   const bookTitle = String(state.current.meta.title || '').trim();
   const skipFirst = allHeadings.length > 1 && bookTitle && allHeadings[0].textContent.trim() === bookTitle;
   state.chapterEls = allHeadings.slice(skipFirst ? 1 : 0);
@@ -495,6 +850,277 @@ function renderProse() {
     if (mark) mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
     state.pendingHighlight = '';
   }
+}
+
+/* ---------- ai review ---------- */
+function updateReviewBar() {
+  const review = state.aiReview;
+  const bar = $('#review-bar');
+  if (bar) bar.hidden = !review;
+
+  const editButton = $('#ms-mode [data-ms-mode="edit"]');
+  if (editButton) editButton.disabled = Boolean(review);
+  if (!review) return;
+
+  const pending = review.proposal?.status === 'pending';
+  const changeCount = review.changes.length;
+  let label;
+
+  if (review.status === 'proposal') {
+    const bits = [];
+    if (changeCount) bits.push(`${changeCount} 处修改`);
+    if (review.draftFinal) bits.push('新章');
+    if (review.notice) bits.push('大纲修改');
+    label = `AI DIFF · ${bits.length ? `${bits.join(' · ')} · ` : ''}待确认`;
+  } else if (review.action === 'revise' && review.selectionWords) {
+    const progress = review.progress ? ` · ${review.progress}` : '';
+    label = `AI DIFF · 正在改写选中 · ${review.selectionWords} 字${progress}`;
+  } else if (review.progress) {
+    label = `AI DIFF · ${review.progress}`;
+  } else if (review.action === 'chapter') {
+    label = `AI DIFF · 新章生成中${review.draft ? ` · ${formatNumber(countWords(review.draft))} 字` : ''}`;
+  } else {
+    label = `AI DIFF · ${changeCount ? `${changeCount} 处修改` : '分析中'}`;
+  }
+
+  const labelElement = $('#review-label');
+  if (labelElement) labelElement.textContent = label;
+  if (bar) bar.dataset.state = review.status;
+
+  const stop = $('#review-stop');
+  if (stop) stop.hidden = review.status !== 'streaming';
+
+  $$('#review-bar [data-review-action]').forEach((button) => {
+    button.hidden = !pending;
+    button.disabled = !pending;
+  });
+  requestAnimationFrame(syncStickyHeight);
+}
+
+function markPendingSelection() {
+  const prose = $('#prose');
+  const selection = window.getSelection();
+  if (!prose || !selection || selection.isCollapsed || !selection.rangeCount) return false;
+
+  const range = selection.getRangeAt(0);
+  if (!prose.contains(range.commonAncestorContainer)) return false;
+
+  $$('.ai-selection-pending', prose).forEach((mark) => {
+    mark.replaceWith(...mark.childNodes);
+  });
+
+  const nodes = [];
+  const walker = document.createTreeWalker(prose, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue || !range.intersectsNode(node)) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+
+  let first = null;
+  for (let index = nodes.length - 1; index >= 0; index -= 1) {
+    const node = nodes[index];
+    let start = 0;
+    let end = node.nodeValue.length;
+    if (node === range.startContainer) start = range.startOffset;
+    if (node === range.endContainer) end = range.endOffset;
+    if (start >= end) continue;
+
+    const target = start > 0 ? node.splitText(start) : node;
+    if (end - start < target.nodeValue.length) target.splitText(end - start);
+
+    const mark = document.createElement('span');
+    mark.className = 'ai-selection-pending';
+    target.parentNode.insertBefore(mark, target);
+    mark.appendChild(target);
+    first = mark;
+  }
+
+  selection.removeAllRanges();
+  if (first) first.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  return Boolean(first);
+}
+
+function startReview(action, { selectionWords = 0, preserveSelection = false } = {}) {
+  const book = state.current;
+  if (!book) return;
+
+  state.aiReview = {
+    action,
+    base: book.manuscript || '',
+    text: book.manuscript || '',
+    changes: [],
+    draft: '',
+    draftFinal: false,
+    status: 'streaming',
+    proposal: null,
+    notice: '',
+    progress: '',
+    selectionWords,
+  };
+  state.aiProposal = null;
+
+  if (state.manuscriptMode === 'edit') setManuscriptMode('read');
+  hideSelection();
+  updateReviewBar();
+  if (!preserveSelection) renderProse();
+}
+
+function clearReview({ render = true } = {}) {
+  state.aiReview = null;
+  state.aiProposal = null;
+  clearTimeout(state.aiDraftTimer);
+  state.aiDraftTimer = null;
+  updateReviewBar();
+  if (render) renderProse();
+}
+
+function applyChangeToReview(review, op) {
+  if (!review || !op || op.type !== 'edit_manuscript') return false;
+
+  const oldText = String(op.old_string || '');
+  const newText = String(op.new_string || '');
+  if (!oldText) return false;
+
+  const index = review.text.indexOf(oldText);
+  if (index < 0) return false;
+
+  const delta = newText.length - oldText.length;
+  for (const change of review.changes) {
+    if (index + oldText.length <= change.start) {
+      change.start += delta;
+      change.end += delta;
+    }
+  }
+
+  review.text = review.text.slice(0, index) + newText + review.text.slice(index + oldText.length);
+  review.changes.push({
+    start: index,
+    end: index + newText.length,
+    old: oldText,
+    new: newText,
+  });
+  review.changes.sort((a, b) => a.start - b.start);
+
+  const merged = [];
+  for (const change of review.changes) {
+    const last = merged[merged.length - 1];
+    if (last && change.start < last.end) {
+      last.end = Math.max(last.end, change.end);
+      last.old += change.old;
+      last.new += change.new;
+      review.overlap = true;
+    } else {
+      merged.push({ ...change });
+    }
+  }
+  review.changes = merged;
+  review.progress = '';
+  return true;
+}
+
+function applyPreviewOp(op) {
+  const review = state.aiReview;
+  if (!review || review.status !== 'streaming' || !op) return false;
+
+  if (op.type === 'edit_outline') {
+    review.notice = '大纲有修改，确认后写入左侧大纲。';
+    review.progress = '';
+    updateReviewBar();
+    renderProse();
+    return true;
+  }
+
+  const applied = applyChangeToReview(review, op);
+  if (applied) {
+    updateReviewBar();
+    renderProse();
+    scrollToReviewChange(true);
+  }
+  return applied;
+}
+
+function openProposalReview(proposal) {
+  const book = state.current;
+  if (!book || !proposal) return;
+
+  state.aiProposal = proposal;
+  const review = {
+    action: proposal.action || 'chat',
+    base: book.manuscript || '',
+    text: book.manuscript || '',
+    changes: [],
+    draft: '',
+    draftFinal: false,
+    status: 'proposal',
+    proposal,
+    notice: '',
+    progress: '',
+  };
+
+  let hasOutline = false;
+  const ops = Array.isArray(proposal.ops) ? proposal.ops : [];
+  for (const op of ops) {
+    if (op.type === 'edit_manuscript') applyChangeToReview(review, op);
+    else if (op.type === 'edit_outline') hasOutline = true;
+    else if (op.type === 'append_chapter') {
+      review.draft = String(op.content || '');
+      review.draftFinal = true;
+    }
+  }
+  if (hasOutline) review.notice = '大纲有修改，确认后写入左侧大纲。';
+  if (!review.changes.length && !review.draftFinal && !hasOutline) {
+    review.notice = '这份提案没有可预览的改动。';
+  }
+
+  state.aiReview = review;
+  if (state.manuscriptMode === 'edit') setManuscriptMode('read');
+  updateReviewBar();
+  renderProse();
+  if (review.draftFinal) scrollToPendingChapter();
+  else scrollToReviewChange(true);
+  setAiState('PROPOSAL', 'proposal');
+  updateAiControls();
+}
+
+function scheduleDraftRender() {
+  if (state.aiDraftTimer) return;
+  state.aiDraftTimer = setTimeout(() => {
+    state.aiDraftTimer = null;
+    updateDraftPreview();
+  }, 80);
+}
+
+function updateDraftPreview() {
+  const review = state.aiReview;
+  if (!review) return;
+
+  const manuscript = $('.manuscript');
+  const nearBottom = isNearBottom(manuscript);
+  let section = $('#ai-pending-chapter');
+  const hadSection = Boolean(section);
+
+  if (!section) {
+    renderProse();
+    section = $('#ai-pending-chapter');
+  } else {
+    const body = $('#ai-pending-body');
+    if (body) {
+      body.innerHTML = DOMPurify.sanitize(review.draft.trim()
+        ? marked.parse(review.draft, { breaks: true, gfm: true })
+        : '<p class="ai-pending-empty">AI 正在写下一章…</p>');
+      renderBlockMath(body);
+      renderMath(body);
+    }
+    const status = section.querySelector('.ai-pending-head span:last-child');
+    if (status) status.textContent = review.draftFinal ? 'READY' : 'STREAMING';
+    const cursor = section.querySelector('.ai-pending-cursor');
+    if (cursor) cursor.hidden = review.draftFinal;
+  }
+
+  if (!hadSection || nearBottom) scrollManuscriptToEnd();
+  updateReviewBar();
 }
 
 function highlightFirst(root, query) {
@@ -667,6 +1293,11 @@ function scheduleChapterRefresh() {
 }
 
 function setManuscriptMode(mode) {
+  if (mode === 'edit' && state.aiReview) {
+    toast('先处理 AI 提案，再手动编辑', 'error');
+    return;
+  }
+
   state.manuscriptMode = mode;
   const editing = mode === 'edit';
 
@@ -685,6 +1316,7 @@ function setManuscriptMode(mode) {
   } else {
     requestAnimationFrame(updateChapterFromCursor);
   }
+  updateReviewBar();
 }
 
 function activateTab(name) {
@@ -773,6 +1405,9 @@ async function saveSection(section) {
     if (stillCurrent) {
       if (latest === content) state.dirty.delete(section);
       else state.saveAgain.add(section);
+    }
+    if (section === 'manuscript' && stillCurrent) {
+      await syncMetaFromManuscript(bookId);
     }
     updateBookSummary(bookId);
     saved = true;
@@ -878,44 +1513,26 @@ function setAiState(label, tone = '') {
   if (stateElement) stateElement.dataset.state = tone;
 }
 
-function aiLog(tag, message, tone = '') {
-  const log = $('#ai-log');
-  if (!log) return;
-  const line = document.createElement('div');
-  line.className = `log-line${tone ? ` ${tone}` : ''}`;
-  const time = document.createElement('time');
-  const now = new Date();
-  time.textContent = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
-  const tagElement = document.createElement('span');
-  tagElement.className = 'tag';
-  tagElement.textContent = tag;
-  const text = document.createElement('span');
-  text.className = 'txt';
-  text.textContent = String(message ?? '');
-  line.append(time, tagElement, text);
-  log.appendChild(line);
-  while (log.children.length > 80) log.firstElementChild.remove();
-  log.scrollTop = log.scrollHeight;
-}
-
 function updateAiControls() {
   const book = state.current;
   const enabled = Boolean(book?.meta?.aiEnabled);
   const running = state.aiRunning;
+  const pending = state.aiProposal?.status === 'pending';
+  const busy = running || pending;
   const hasSelection = Boolean(state.selectionText);
 
   const instruction = $('#ai-instruction');
-  if (instruction) instruction.disabled = !enabled || running;
+  if (instruction) instruction.disabled = !enabled || busy;
   ['#ai-next', '#ai-outline'].forEach((selector) => {
     const button = $(selector);
-    if (button) button.disabled = !enabled || running;
+    if (button) button.disabled = !enabled || busy;
   });
   const revise = $('#ai-revise');
-  if (revise) revise.disabled = !enabled || running || !hasSelection;
+  if (revise) revise.disabled = !enabled || busy || !hasSelection;
   const selectionRevise = $('#selection-revise');
-  if (selectionRevise) selectionRevise.disabled = !enabled || running || !hasSelection;
+  if (selectionRevise) selectionRevise.disabled = !enabled || busy || !hasSelection;
   $$('#ai-mode button').forEach((button) => {
-    button.disabled = !enabled || running;
+    button.disabled = !enabled || busy;
   });
   const stop = $('#ai-stop');
   if (stop) stop.hidden = !running;
@@ -925,11 +1542,13 @@ function updateAiControls() {
     note.classList.toggle('busy', running);
     note.textContent = running
       ? 'RUNNING / 运行中'
-      : !enabled
-        ? 'AI 未开启'
-        : state.aiMode === 'auto'
-          ? 'AUTO / 直接写入'
-          : 'DIFF / 先看提案';
+      : pending
+        ? 'DIFF / 等待确认'
+        : !enabled
+          ? 'AI 未开启'
+          : state.aiMode === 'auto'
+            ? 'AUTO / 直接写入'
+            : 'DIFF / 先看提案';
   }
 }
 
@@ -940,22 +1559,7 @@ function renderAgent({ reset = false } = {}) {
   const bookChanged = state.aiBookId !== book.meta.id;
   if (reset || bookChanged) {
     state.aiBookId = book.meta.id;
-    state.aiStreamText = '';
     state.aiProposal = null;
-    const log = $('#ai-log');
-    if (log) log.innerHTML = '';
-    const stream = $('#ai-stream');
-    if (stream) stream.hidden = true;
-    const streamText = $('#ai-stream-text');
-    if (streamText) streamText.textContent = '';
-    const proposal = $('#ai-proposal');
-    if (proposal) {
-      proposal.hidden = true;
-      proposal.innerHTML = '';
-    }
-    aiLog('SYS', `BOOK / ${book.meta.title || '—'}`);
-    if (book.meta.aiEnabled) aiLog('SYS', `MODE / ${String(book.meta.aiMode || 'diff').toUpperCase()}`);
-    else aiLog('SYS', 'AI 未开启 / READ ONLY');
     loadPendingProposals(book.meta.id);
   }
 
@@ -970,6 +1574,7 @@ function renderAgent({ reset = false } = {}) {
   else if (!state.aiRunning && !state.aiProposal && (reset || bookChanged)) setAiState('STANDBY', '');
 
   updateAiControls();
+  updateReviewBar();
 }
 
 async function setAiMode(mode) {
@@ -984,7 +1589,6 @@ async function setAiMode(mode) {
   });
   const wsStatus = $('#ws-status');
   if (wsStatus) wsStatus.textContent = `AI ${mode.toUpperCase()}`;
-  aiLog('SYS', `MODE / ${mode.toUpperCase()}`);
   updateAiControls();
 
   try {
@@ -1004,97 +1608,93 @@ async function loadPendingProposals(bookId) {
     if (state.current?.meta.id !== bookId) return;
     const proposals = Array.isArray(data.proposals) ? data.proposals : [];
     if (!proposals.length) {
-      if (!state.aiProposal) {
-        const panel = $('#ai-proposal');
-        if (panel) {
-          panel.hidden = true;
-          panel.innerHTML = '';
-        }
+      if (state.aiReview?.status === 'proposal' && !state.aiRunning) {
+        clearReview();
       }
       return;
     }
 
     const proposal = proposals[0];
     if (state.aiProposal?.id === proposal.id) return;
-    state.aiProposal = proposal;
-    renderProposal(proposal);
-    setAiState('PROPOSAL', 'proposal');
-    aiLog('SYS', proposals.length > 1 ? `待确认提案 ${proposals.length} 个` : '待确认提案');
+    openProposalReview(proposal);
+    if (proposals.length > 1) toast(`还有 ${proposals.length - 1} 个待确认提案`, 'info');
   } catch (err) {
-    aiLog('WARN', `读取提案失败：${err.message}`, 'warn');
+    toast(`读取提案失败：${err.message}`, 'error');
   }
 }
 
-function compactValue(value) {
-  if (value === null || value === undefined) return '';
-  let text;
-  try {
-    text = typeof value === 'string' ? value : JSON.stringify(value);
-  } catch {
-    text = String(value);
-  }
-  return text.length > 180 ? `${text.slice(0, 177)}...` : text;
+function toolProgressLabel(name) {
+  return {
+    read_manuscript: '读取正文…',
+    search_manuscript: '搜索正文…',
+    read_outline: '读取大纲…',
+    read_notes: '读取设定…',
+    edit_manuscript: '应用修改…',
+    edit_outline: '修改大纲…',
+    finish: '收尾…',
+  }[name] || '处理中…';
 }
 
 function handleAiEvent(type, payload = {}) {
   if (type === 'delta') {
-    state.aiStreamText += payload.text || '';
-    const stream = $('#ai-stream');
-    const text = $('#ai-stream-text');
-    if (stream) stream.hidden = false;
-    if (text) {
-      text.textContent = state.aiStreamText;
-      text.scrollTop = text.scrollHeight;
+    const review = state.aiReview;
+    if (review && review.status === 'streaming' && review.action === 'chapter') {
+      review.draft += payload.text || '';
+      scheduleDraftRender();
     }
     return;
   }
 
   if (type === 'meta') {
-    aiLog('SYS', `${String(payload.mode || '').toUpperCase()} / ${String(payload.action || '').toUpperCase()} / ${payload.model || '—'}`);
     setAiState('RUNNING', 'running');
     return;
   }
 
-  if (type === 'tool') {
-    const name = payload.name || 'tool';
-    if (payload.phase === 'start') aiLog('TOOL', `${name} ${compactValue(payload.args)}`);
-    else if (payload.phase === 'error') aiLog('ERR', `${name}: ${payload.message || '失败'}`, 'err');
-    else aiLog('TOOL', `${name} ✓ ${compactValue(payload.result)}`);
+  if (type === 'preview') {
+    if (payload.op) applyPreviewOp(payload.op);
     return;
   }
 
-  if (type === 'written') {
-    const changed = Array.isArray(payload.changed) ? payload.changed.join(' + ') : '正文';
-    aiLog('OK', `写入 ${changed}`, 'ok');
+  if (type === 'tool') {
+    const review = state.aiReview;
+    if (review && review.status === 'streaming') {
+      if (payload.phase === 'start') {
+        if (review.action === 'chapter' && review.draft) {
+          review.draft = '';
+          scheduleDraftRender();
+        }
+        review.progress = toolProgressLabel(payload.name);
+      } else {
+        review.progress = '';
+      }
+      updateReviewBar();
+    }
+    if (payload.phase === 'error') {
+      toast(`${payload.name || '工具'}：${payload.message || '失败'}`, 'error');
+    }
     return;
   }
+
+  if (type === 'written') return;
 
   if (type === 'proposal') {
-    if (!payload.proposal) return;
-    state.aiProposal = payload.proposal;
-    const stream = $('#ai-stream');
-    if (stream) stream.hidden = true;
-    renderProposal(payload.proposal);
-    setAiState('PROPOSAL', 'proposal');
-    aiLog('SYS', `提案待确认 / ${payload.proposal.id || ''}`);
+    if (payload.proposal) openProposalReview(payload.proposal);
     return;
   }
 
   if (type === 'warning') {
-    aiLog('WARN', payload.message || '警告', 'warn');
+    toast(payload.message || '警告', 'warn');
     return;
   }
 
   if (type === 'error') {
-    aiLog('ERR', payload.message || 'AI 运行失败', 'err');
     setAiState('ERROR', 'error');
     toast(payload.message || 'AI 运行失败', 'error');
+    if (!state.aiProposal) clearReview();
     return;
   }
 
-  if (type === 'done') {
-    aiLog('SYS', payload.ok ? 'DONE' : 'FAILED');
-  }
+  if (type === 'done') return;
 }
 
 async function streamAiResponse(response, onEvent) {
@@ -1184,17 +1784,12 @@ async function runAi({ action = 'chapter', useSelection = false } = {}) {
 
   state.aiRunning = true;
   state.aiAbort = controller;
-  state.aiStreamText = '';
-  state.aiProposal = null;
-  const stream = $('#ai-stream');
-  const streamText = $('#ai-stream-text');
-  const proposalPanel = $('#ai-proposal');
-  if (stream) stream.hidden = false;
-  if (streamText) streamText.textContent = '';
-  if (proposalPanel) {
-    proposalPanel.hidden = true;
-    proposalPanel.innerHTML = '';
-  }
+  const selectionWords = useSelection ? countWords(selection?.text || '') : 0;
+  const preserveSelection = mode === 'diff' && action === 'revise' && useSelection
+    ? markPendingSelection()
+    : false;
+  if (mode === 'diff') startReview(action, { selectionWords, preserveSelection });
+  else clearReview({ render: false });
   setAiState('RUNNING', 'running');
   updateAiControls();
 
@@ -1221,16 +1816,19 @@ async function runAi({ action = 'chapter', useSelection = false } = {}) {
     if (state.current?.meta.id !== bookId) return;
 
     if (written) {
-      aiLog('OK', '正文已更新，正在刷新', 'ok');
       await refreshBookAfterAi({ scrollEnd: action === 'chapter' });
+    }
+    if (mode === 'diff' && !state.aiProposal && !hadError) {
+      clearReview();
+      toast('AI 没有产生修改', 'info');
     }
     if (!state.aiProposal && !hadError) setAiState('DONE', 'done');
   } catch (err) {
     if (err.name === 'AbortError' || controller.signal.aborted) {
-      aiLog('SYS', '已停止');
+      if (state.current?.meta.id === bookId && !state.aiProposal) clearReview();
       if (state.current?.meta.id === bookId && !state.aiProposal) setAiState('STANDBY', '');
     } else {
-      aiLog('ERR', err.message || 'AI 运行失败', 'err');
+      if (state.current?.meta.id === bookId && !state.aiProposal) clearReview();
       setAiState('ERROR', 'error');
       toast(err.message || 'AI 运行失败', 'error');
     }
@@ -1241,75 +1839,18 @@ async function runAi({ action = 'chapter', useSelection = false } = {}) {
   }
 }
 
-function stopAi({ silent = false } = {}) {
+function stopAi() {
   if (!state.aiRunning || !state.aiAbort) return;
-  if (!silent) aiLog('SYS', '停止中…');
   state.aiAbort.abort();
 }
 
-function proposalOpHtml(op = {}) {
-  const type = String(op.type || '');
-  if (type === 'append_chapter') {
-    return `<div class="op">
-      <div class="op-head"><span>APPEND CHAPTER</span><b>${escapeHtml(op.title || '未命名章节')}</b></div>
-      <pre class="op-body">${escapeHtml(op.content || '')}</pre>
-    </div>`;
-  }
-  if (type === 'edit_manuscript' || type === 'edit_outline') {
-    const label = type === 'edit_manuscript' ? '正文' : '大纲';
-    return `<div class="op">
-      <div class="op-head"><span>EDIT ${label}</span><b>${escapeHtml(String(op.old_string || '').slice(0, 42))}</b></div>
-      <div class="diff">
-        <div class="diff-old"><span class="diff-label">OLD / 原文</span><pre>${escapeHtml(op.old_string || '')}</pre></div>
-        <div class="diff-new"><span class="diff-label">NEW / 改写</span><pre>${escapeHtml(op.new_string || '')}</pre></div>
-      </div>
-    </div>`;
-  }
-  if (type === 'save_summary') {
-    return `<div class="op">
-      <div class="op-head"><span>SUMMARY</span><b>${escapeHtml(op.chapter || '')}</b></div>
-      <div class="op-summary">${escapeHtml(op.summary || '')}</div>
-    </div>`;
-  }
-  return `<div class="op">
-    <div class="op-head"><span>${escapeHtml(type || 'OP')}</span></div>
-    <pre class="op-body">${escapeHtml(JSON.stringify(op, null, 2))}</pre>
-  </div>`;
-}
-
-function renderProposal(proposal) {
-  const panel = $('#ai-proposal');
-  if (!panel || !proposal) return;
-
-  const ops = Array.isArray(proposal.ops) ? proposal.ops : [];
-  const summary = String(proposal.summary || proposal.instruction || '').trim();
-  const action = String(proposal.action || 'change').toUpperCase();
-  const mode = String(proposal.mode || 'diff').toUpperCase();
-  const pending = proposal.status === 'pending';
-  const actions = pending
-    ? `<div class="proposal-actions">
-        <button class="btn danger" type="button" data-proposal-action="reject">拒绝 / REJECT</button>
-        <button class="btn" type="button" data-proposal-action="accept">写入 / APPLY</button>
-      </div>`
-    : `<div class="proposal-status">${escapeHtml(String(proposal.status || '').toUpperCase())}</div>`;
-
-  panel.innerHTML = `
-    <div class="proposal-head"><span>/// DIFF PROPOSAL</span><span>${escapeHtml(mode)} / ${escapeHtml(action)}</span></div>
-    ${summary ? `<div class="proposal-meta">${escapeHtml(summary)}</div>` : ''}
-    ${ops.map(proposalOpHtml).join('') || '<div class="op"><div class="op-summary">没有可预览的修改。</div></div>'}
-    ${actions}
-  `;
-  panel.hidden = false;
-}
-
 async function respondProposal(action) {
-  const proposal = state.aiProposal;
+  const proposal = state.aiProposal || state.aiReview?.proposal;
   const book = state.current;
   if (!proposal || !book || proposal.status !== 'pending') return;
 
   const bookId = book.meta.id;
-  const buttons = $$('#ai-proposal [data-proposal-action]');
-  buttons.forEach((button) => {
+  $$('#review-bar [data-review-action]').forEach((button) => {
     button.disabled = true;
   });
 
@@ -1320,39 +1861,24 @@ async function respondProposal(action) {
     );
 
     if (action === 'accept') {
-      aiLog('OK', '提案已写入', 'ok');
       toast('已写入正文', 'success');
       const scrollEnd = (proposal.ops || []).some((op) => op.type === 'append_chapter')
         || (Array.isArray(result.changed) && result.changed.includes('manuscript'));
+      state.aiReview = null;
       state.aiProposal = null;
-      const panel = $('#ai-proposal');
-      if (panel) {
-        panel.hidden = true;
-        panel.innerHTML = '';
-      }
-      const stream = $('#ai-stream');
-      if (stream) stream.hidden = true;
+      updateReviewBar();
       setAiState('DONE', 'done');
       await refreshBookAfterAi({ scrollEnd });
     } else {
-      aiLog('SYS', '提案已拒绝');
       toast('已拒绝提案');
-      state.aiProposal = null;
-      const panel = $('#ai-proposal');
-      if (panel) {
-        panel.hidden = true;
-        panel.innerHTML = '';
-      }
-      const stream = $('#ai-stream');
-      if (stream) stream.hidden = true;
+      clearReview();
       if (!state.aiRunning) setAiState('STANDBY', '');
     }
 
     await loadPendingProposals(bookId);
   } catch (err) {
-    aiLog('ERR', err.message || '提案处理失败', 'err');
     toast(err.message || '提案处理失败', 'error');
-    renderProposal(proposal);
+    updateReviewBar();
   }
 }
 
@@ -1387,7 +1913,7 @@ async function refreshBookAfterAi({ scrollEnd = false } = {}) {
 
     updateBookSummary(bookId);
   } catch (err) {
-    aiLog('WARN', `刷新失败：${err.message}`, 'warn');
+    toast(`刷新失败：${err.message}`, 'error');
   }
 }
 
@@ -1643,6 +2169,26 @@ function wireEvents() {
     if (button) setManuscriptMode(button.dataset.msMode);
   });
 
+  $('#ms-title').addEventListener('click', startTitleEdit);
+  $('#ms-title').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      startTitleEdit();
+    }
+  });
+  $('#ms-title-input').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commitTitleEdit();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      stopTitleEdit();
+    }
+  });
+  $('#ms-title-input').addEventListener('blur', () => {
+    if (state.titleEditing) commitTitleEdit();
+  });
+
   $('#chapter-btn').addEventListener('click', (event) => {
     event.stopPropagation();
     openChapterMenu($('#chapter-menu').hidden);
@@ -1668,8 +2214,18 @@ function wireEvents() {
   });
 
   window.addEventListener('resize', () => {
-    requestAnimationFrame(updateChapterFromScroll);
+    requestAnimationFrame(() => {
+      syncStickyHeight();
+      updateChapterFromScroll();
+    });
   });
+
+  const sticky = $('.ms-sticky');
+  if (sticky && typeof ResizeObserver !== 'undefined') {
+    state.stickyObserver = new ResizeObserver(() => syncStickyHeight());
+    state.stickyObserver.observe(sticky);
+  }
+  syncStickyHeight();
 
   $('#save-briefing').addEventListener('click', () => saveAll({ notify: true }));
   $('#save-manuscript').addEventListener('click', () => saveAll({ notify: true }));
@@ -1690,19 +2246,13 @@ function wireEvents() {
   $('#selection-revise').addEventListener('click', () => runAi({ action: 'revise', useSelection: true }));
   $('#ai-stop').addEventListener('click', () => stopAi());
 
-  $('#ai-copy').addEventListener('click', async () => {
-    if (!state.aiStreamText) return;
-    try {
-      await navigator.clipboard.writeText(state.aiStreamText);
-      toast('已复制', 'success');
-    } catch {
-      toast('复制失败，浏览器没有剪贴板权限', 'error');
+  $('#review-bar').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-review-action]');
+    if (button) {
+      respondProposal(button.dataset.reviewAction);
+      return;
     }
-  });
-
-  $('#ai-proposal').addEventListener('click', (event) => {
-    const button = event.target.closest('[data-proposal-action]');
-    if (button) respondProposal(button.dataset.proposalAction);
+    if (event.target.closest('#review-stop')) stopAi();
   });
 
   $('#ai-instruction').addEventListener('keydown', (event) => {
@@ -1710,11 +2260,6 @@ function wireEvents() {
       event.preventDefault();
       runAi({ action: 'chapter' });
     }
-  });
-
-  $('#back-btn').addEventListener('click', async () => {
-    await flushSave();
-    location.hash = '#/library';
   });
 
   $('#theme-editor').addEventListener('input', () => {
@@ -1743,6 +2288,9 @@ function wireEvents() {
       words: countWords(value),
       chapters: countChapters(value, state.current.meta.title),
     };
+    const heading = getManuscriptTitle(value);
+    state.titleDirty = Boolean(heading?.title && heading.title !== state.loadedHeading);
+    updateTitleDisplay();
     $('#ms-words').textContent = `${formatNumber(state.current.stats.words)} 字`;
     scheduleChapterRefresh();
     markDirty('manuscript');

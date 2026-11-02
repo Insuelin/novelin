@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="zh-CN" data-accent="amber">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NOVELIN — AI Narrative Terminal</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="bg" aria-hidden="true">
+  <div class="bg-grid"></div>
+  <div class="bg-stripes"></div>
+  <div class="bg-stripes b"></div>
+  <div class="glow a"></div>
+  <div class="glow b"></div>
+  <div class="glow c"></div>
+  <div class="bg-word">NOVELIN</div>
+  <div class="bg-noise"></div>
+  <div class="bg-scan"></div>
+</div>
+<div class="frame-corner fc-tl"></div>
+<div class="frame-corner fc-tr"></div>
+<div class="frame-corner fc-bl"></div>
+<div class="frame-corner fc-br"></div>
+
+<header class="topbar">
+  <a class="brand" href="#/library" aria-label="NOVELIN 书架">
+    <div class="brand-mark"><i></i><i></i></div>
+    <div class="brand-type">NOVELIN<small>AI NARRATIVE TERMINAL</small></div>
+  </a>
+  <nav class="mainnav">
+    <button class="navbtn active" type="button" data-nav="library"><b>LIBRARY</b><span>书架</span></button>
+    <button class="navbtn" type="button" data-nav="workspace"><b>WORKSPACE</b><span>写作台</span></button>
+  </nav>
+  <div class="top-right">
+    <div class="accents">
+      <em>ACCENT</em>
+      <button class="sw sw-amber active" type="button" data-accent-btn="amber" title="琥珀黄"></button>
+      <button class="sw sw-orange" type="button" data-accent-btn="orange" title="橙红"></button>
+      <button class="sw sw-white" type="button" data-accent-btn="white" title="冷白"></button>
+      <button class="sw sw-cyan" type="button" data-accent-btn="cyan" title="青绿"></button>
+    </div>
+    <div class="clock"><b id="clock">--:--</b><span>LOCAL / 127.0.0.1</span></div>
+  </div>
+</header>
+
+<main>
+  <!-- ================= LIBRARY ================= -->
+  <section id="view-library" class="view active" data-dropzone>
+    <div class="lib-hero">
+      <div class="hero-index">01</div>
+      <div class="hero-copy">
+        <div class="eyebrow">/// ARCHIVE / 卷宗索引</div>
+        <h1>LIBRARY<span>书架</span></h1>
+        <p>人定主题、走向和大纲，机器负责把空白填满。</p>
+      </div>
+      <div class="hero-stats">
+        <div class="stat"><b id="stat-books">00</b><span>BOOKS 卷</span></div>
+        <div class="stat"><b id="stat-words">0</b><span>WORDS 字</span></div>
+        <div class="stat"><b id="stat-chapters">00</b><span>CHAPTERS 章</span></div>
+      </div>
+    </div>
+
+    <div class="lib-toolbar">
+      <div class="filters" id="filters">
+        <button class="on" type="button" data-filter="all">ALL 全部</button>
+        <button type="button" data-filter="writing">WRITING 连载</button>
+        <button type="button" data-filter="reading">READING 阅读</button>
+      </div>
+      <div class="toolbar-right">
+        <label class="searchbox"><span>SEARCH /</span><input id="search-input" type="search" placeholder="搜书名、句子、人物" autocomplete="off"></label>
+        <span class="select-wrap sort-wrap">
+          <select id="sort-select" class="select" aria-label="排序">
+            <option value="recent">SORT / 最近更新</option>
+            <option value="words">SORT / 字数</option>
+            <option value="title">SORT / 标题</option>
+          </select>
+        </span>
+        <button class="btn ghost" id="new-book-btn" type="button">+ NEW</button>
+        <button class="btn" id="import-btn" type="button">+ IMPORT .MD</button>
+      </div>
+    </div>
+
+    <div id="search-results" class="search-results" hidden></div>
+    <div id="book-grid" class="book-grid" aria-live="polite"></div>
+
+    <div id="library-empty" class="empty" hidden>
+      <div class="empty-no">00</div>
+      <h2>还没有书</h2>
+      <p>新建一本，或者把现成的 md 拖进来。</p>
+      <div class="empty-actions">
+        <button class="btn" type="button" data-new-book>新建作品</button>
+        <button class="btn ghost" type="button" data-import-book>导入 md</button>
+      </div>
+    </div>
+
+    <div class="import-strip" id="dropzone" tabindex="0" role="button" aria-label="导入 Markdown 文件">
+      <div class="plus">+</div>
+      <div>
+        <b>IMPORT MANUSCRIPT / 导入文稿</b>
+        <p>拖入 .md 文件。可以接着写、当设定参考，或者只放进书架阅读。</p>
+      </div>
+      <span class="btn ghost">SELECT FILE</span>
+    </div>
+  </section>
+
+  <!-- ================= WORKSPACE ================= -->
+  <section id="view-workspace" class="view">
+    <div class="desk-head">
+      <div class="breadcrumb">
+        <a href="#/library">LIBRARY</a><span class="sep">/</span><b id="ws-breadcrumb">—</b><span class="sep">/</span><span id="ws-status">—</span>
+      </div>
+      <div class="desk-actions">
+        <span class="save-state" id="save-state">SAVED</span>
+        <button class="btn ghost small" id="back-btn" type="button">← LIBRARY</button>
+      </div>
+    </div>
+
+    <div class="desk-grid">
+      <aside class="panel briefing">
+        <div class="panel-head"><span class="no">01</span><h3>BRIEFING</h3><small>设定</small></div>
+        <div class="tabs" id="briefing-tabs">
+          <button class="on" type="button" data-tab="theme">主题</button>
+          <button type="button" data-tab="outline">大纲</button>
+          <button type="button" data-tab="notes">笔记</button>
+        </div>
+        <div class="briefing-body">
+          <div class="tab-pane on" data-pane="theme">
+            <label class="field-label" for="theme-editor">THEME / 主题</label>
+            <textarea id="theme-editor" class="editor" placeholder="一句话写清这本书要讲什么。"></textarea>
+          </div>
+          <div class="tab-pane" data-pane="outline">
+            <label class="field-label" for="outline-editor">OUTLINE / 大纲</label>
+            <textarea id="outline-editor" class="editor mono" placeholder="## 第一章 ..."></textarea>
+          </div>
+          <div class="tab-pane" data-pane="notes">
+            <label class="field-label" for="notes-editor">NOTES / 人物与设定</label>
+            <textarea id="notes-editor" class="editor" placeholder="人物、地点、文风、禁忌……"></textarea>
+          </div>
+        </div>
+        <div class="panel-foot">
+          <button class="btn ghost" id="save-briefing" type="button">SAVE / CTRL+S</button>
+        </div>
+      </aside>
+
+      <div class="ms-wrap">
+        <div class="ms-scene" aria-hidden="true"><i class="b1"></i><i class="b2"></i><i class="b3"></i><span class="line l1"></span><span class="line l2"></span></div>
+        <section class="manuscript">
+          <div class="glass-glare"></div>
+          <div class="ms-sticky">
+          <div class="ms-head">
+            <div class="chapter-nav" id="chapter-nav">
+              <button class="chapter-btn" id="chapter-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
+                <span id="chapter-label">CH / —</span>
+                <i class="chev" aria-hidden="true"></i>
+              </button>
+              <div class="chapter-menu" id="chapter-menu" role="listbox" hidden></div>
+            </div>
+            <h2 id="ms-title">—</h2>
+            <div class="ms-meta"><span id="ms-words">0 字</span><br><span id="ms-mode-label">READ</span></div>
+          </div>
+          <div class="ms-toolbar">
+            <div class="segmented small" id="ms-mode">
+              <button class="on" type="button" data-ms-mode="read">READ</button>
+              <button type="button" data-ms-mode="edit">EDIT</button>
+            </div>
+            <button class="btn ghost small" id="save-manuscript" type="button" hidden>SAVE</button>
+            <span class="hint">Ctrl+S 保存 · 选中正文可准备改写</span>
+          </div>
+          </div>
+          <article id="prose" class="prose"></article>
+          <textarea id="manuscript-editor" class="manuscript-editor" hidden spellcheck="false" placeholder="从这里开始写，或者让 AI 写下一章。"></textarea>
+          <div class="selection-note" id="selection-note" hidden>
+            <span id="selection-info">SELECTED · 0 字</span>
+            <div class="acts"><button class="text-btn" id="selection-revise" type="button">AI 改写选中</button></div>
+          </div>
+          <div class="ms-corner"></div>
+        </section>
+      </div>
+
+      <aside class="panel console">
+        <div class="panel-head"><span class="no">02</span><h3>AGENT</h3><small>写作台</small></div>
+        <div class="agent-state" id="ai-state"><span class="dot"></span><span id="ai-state-text">STANDBY</span><span class="model" id="ai-model-label">—</span></div>
+        <div class="agent-body">
+          <div class="mode-row">
+            <span>MODE / 模式</span>
+            <div class="segmented small" id="ai-mode">
+              <button type="button" data-ai-mode="auto">AUTO</button>
+              <button type="button" data-ai-mode="diff">DIFF</button>
+            </div>
+          </div>
+          <label class="field-label" for="ai-instruction">INSTRUCTION / 指令</label>
+          <textarea id="ai-instruction" class="agent-input" rows="3" placeholder="想让 AI 做什么？例如：写下一章，承接前文。"></textarea>
+          <div class="quick">
+            <button class="btn wide" type="button" id="ai-next">写下一章 / NEXT</button>
+            <button class="btn ghost" type="button" id="ai-revise" disabled>改写选中</button>
+            <button class="btn ghost" type="button" id="ai-outline">按大纲重写</button>
+          </div>
+          <div class="agent-actions">
+            <span class="agent-note" id="ai-note">READY</span>
+            <button class="btn danger small" type="button" id="ai-stop" hidden>STOP</button>
+          </div>
+          <div class="agent-stream" id="ai-stream" hidden>
+            <div class="stream-head"><span>STREAM / 输出</span><button class="text-btn" type="button" id="ai-copy">COPY</button></div>
+            <pre id="ai-stream-text"></pre>
+          </div>
+          <div class="proposal" id="ai-proposal" hidden></div>
+          <div class="log" id="ai-log" aria-live="polite"></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+</main>
+
+<footer class="statusbar">
+  <span>NOVELIN <b>0.1.0</b></span>
+  <span class="hide-m">ENGINE <b>MAGPIE / LOCAL</b></span>
+  <div class="right">
+    <span class="ok">● SYSTEM NOMINAL</span>
+    <span class="hide-m">127.0.0.1:4173</span>
+    <span id="date">----.--.--</span>
+  </div>
+</footer>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<input id="file-input" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden>
+
+<dialog id="book-dialog" class="modal">
+  <div class="modal-frame">
+  <div class="modal-head">
+    <div>
+      <div class="eyebrow">/// NEW MANUSCRIPT / 新建卷宗</div>
+      <h2 id="book-dialog-title">新建作品</h2>
+    </div>
+    <button class="icon-btn" type="button" data-close-dialog="book-dialog" aria-label="关闭">×</button>
+  </div>
+  <div class="modal-body">
+    <label class="field-label" for="book-title">标题 TITLE</label>
+    <input id="book-title" class="input" type="text" maxlength="200" placeholder="例如：雾港来信">
+
+    <label class="field-label">用途 USAGE</label>
+    <div class="segmented" id="book-usage">
+      <button class="on" type="button" data-usage="continue">接着写</button>
+      <button type="button" data-usage="reference">参考资料</button>
+      <button type="button" data-usage="read">只阅读</button>
+    </div>
+    <p class="modal-hint" id="usage-hint">导入的 md 会成为正文，AI 可以从后面继续写。</p>
+    <label class="check modal-check"><input type="checkbox" id="open-after-create" checked><span>创建后立即打开</span></label>
+
+    <label class="field-label" for="book-content">正文 / 参考内容 CONTENT</label>
+    <textarea id="book-content" class="textarea" rows="10" placeholder="可以粘贴 Markdown，也可以留空后自己写"></textarea>
+    <p class="modal-hint" id="file-hint"></p>
+  </div>
+  <div class="modal-actions">
+    <button class="btn ghost" type="button" data-close-dialog="book-dialog">取消</button>
+    <button class="btn" type="button" id="book-create">创建 / 导入</button>
+  </div>
+  </div>
+</dialog>
+
+<dialog id="confirm-dialog" class="modal modal-small">
+  <div class="modal-frame">
+  <div class="modal-head">
+    <div>
+      <div class="eyebrow">/// CONFIRM</div>
+      <h2 id="confirm-title">确认操作</h2>
+    </div>
+  </div>
+  <div class="modal-body"><p id="confirm-text"></p></div>
+  <div class="modal-actions">
+    <button class="btn ghost" type="button" id="confirm-cancel">取消</button>
+    <button class="btn danger" type="button" id="confirm-ok">确认</button>
+  </div>
+  </div>
+</dialog>
+
+<noscript><p class="noscript">NOVELIN 需要 JavaScript。请打开浏览器的脚本权限后刷新。</p></noscript>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

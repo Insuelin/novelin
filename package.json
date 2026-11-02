@@ -1,0 +1,23 @@
+{
+  "name": "novelin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local AI novel writing terminal",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.17",
+    "express": "^4.21.2",
+    "marked": "^18.1.2"
+  },
+  "devDependencies": {
+    "geckodriver": "^8.0.0"
+  }
+}

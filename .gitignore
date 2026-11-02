@@ -1,0 +1,16 @@
+node_modules/
+
+# local manuscripts and backups
+data/
+
+# generated screenshots and reference images
+shots/
+ui-lab/shots/
+ui-lab/ref/
+
+# local env / editor noise
+.env
+.env.*
+*.log
+.DS_Store
+Thumbs.db

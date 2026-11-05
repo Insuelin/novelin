@@ -70,13 +70,19 @@
       </div>
       <div class="toolbar-right">
         <label class="searchbox"><span>SEARCH /</span><input id="search-input" type="search" placeholder="搜书名、句子、人物" autocomplete="off"></label>
-        <span class="select-wrap sort-wrap">
-          <select id="sort-select" class="select" aria-label="排序">
-            <option value="recent">SORT / 最近更新</option>
-            <option value="words">SORT / 字数</option>
-            <option value="title">SORT / 标题</option>
-          </select>
-        </span>
+        <div class="dropdown sort-wrap" id="sort-dropdown" data-dropdown>
+          <button class="dropdown-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+            <span class="dropdown-label">SORT / 最近更新</span>
+            <i class="chev" aria-hidden="true"></i>
+          </button>
+          <div class="dropdown-menu" role="listbox" hidden>
+            <div class="dropdown-list">
+              <button class="dropdown-item on" type="button" role="option" data-value="recent">SORT / 最近更新</button>
+              <button class="dropdown-item" type="button" role="option" data-value="words">SORT / 字数</button>
+              <button class="dropdown-item" type="button" role="option" data-value="title">SORT / 标题</button>
+            </div>
+          </div>
+        </div>
         <button class="btn ghost" id="new-book-btn" type="button">+ NEW</button>
         <button class="btn" id="import-btn" type="button">+ IMPORT .MD</button>
       </div>
@@ -117,31 +123,47 @@
     </div>
 
     <div class="desk-grid">
-      <aside class="panel briefing">
-        <div class="panel-head"><span class="no">01</span><h3>BRIEFING</h3><small>设定</small></div>
-        <div class="tabs" id="briefing-tabs">
-          <button class="on" type="button" data-tab="theme">主题</button>
-          <button type="button" data-tab="outline">大纲</button>
-          <button type="button" data-tab="notes">笔记</button>
-        </div>
-        <div class="briefing-body">
-          <div class="tab-pane on" data-pane="theme">
-            <label class="field-label" for="theme-editor">THEME / 主题</label>
-            <textarea id="theme-editor" class="editor" placeholder="一句话写清这本书要讲什么。"></textarea>
+      <div class="desk-side">
+        <aside class="panel briefing">
+          <div class="panel-head"><span class="no">01</span><h3>BRIEFING</h3><small>设定</small></div>
+          <div class="tabs" id="briefing-tabs">
+            <button class="on" type="button" data-tab="theme">主题</button>
+            <button type="button" data-tab="outline">大纲</button>
+            <button type="button" data-tab="notes">笔记</button>
           </div>
-          <div class="tab-pane" data-pane="outline">
-            <label class="field-label" for="outline-editor">OUTLINE / 大纲</label>
-            <textarea id="outline-editor" class="editor mono" placeholder="## 第一章 ..."></textarea>
+          <div class="briefing-body">
+            <div class="tab-pane on" data-pane="theme">
+              <label class="field-label" for="theme-editor">THEME / 主题</label>
+              <div class="editor-box">
+                <textarea id="theme-editor" class="editor" placeholder="一句话写清这本书要讲什么。"></textarea>
+              </div>
+            </div>
+            <div class="tab-pane" data-pane="outline">
+              <label class="field-label" for="outline-editor">OUTLINE / 大纲</label>
+              <div class="editor-box">
+                <textarea id="outline-editor" class="editor mono" placeholder="## 第一章 ..."></textarea>
+              </div>
+            </div>
+            <div class="tab-pane" data-pane="notes">
+              <label class="field-label" for="notes-editor">NOTES / 人物与设定</label>
+              <div class="editor-box">
+                <textarea id="notes-editor" class="editor" placeholder="人物、地点、文风、禁忌……"></textarea>
+              </div>
+            </div>
           </div>
-          <div class="tab-pane" data-pane="notes">
-            <label class="field-label" for="notes-editor">NOTES / 人物与设定</label>
-            <textarea id="notes-editor" class="editor" placeholder="人物、地点、文风、禁忌……"></textarea>
+          <div class="panel-foot">
+            <button class="btn ghost" id="save-briefing" type="button">SAVE / CTRL+S</button>
           </div>
-        </div>
-        <div class="panel-foot">
-          <button class="btn ghost" id="save-briefing" type="button">SAVE / CTRL+S</button>
-        </div>
-      </aside>
+        </aside>
+
+        <section class="panel log-panel">
+          <div class="log-head">
+            <span>LOG / 日志</span>
+            <button class="log-level" id="log-level" type="button" data-level="info" aria-label="日志等级 INFO，点击切换">INFO</button>
+          </div>
+          <div class="log" id="ai-log" aria-live="polite"></div>
+        </section>
+      </div>
 
       <div class="ms-wrap">
         <div class="ms-scene" aria-hidden="true"><i class="b1"></i><i class="b2"></i><i class="b3"></i><span class="line l1"></span><span class="line l2"></span></div>
@@ -199,7 +221,7 @@
 
       <aside class="panel console">
         <div class="panel-head"><span class="no">02</span><h3>AGENT</h3><small>写作台</small></div>
-        <div class="agent-state" id="ai-state"><span class="dot"></span><span id="ai-state-text">STANDBY</span><span class="model" id="ai-model-label">—</span></div>
+        <div class="agent-state" id="ai-state"><span class="dot"></span><span id="ai-state-text">STANDBY</span><button class="model" id="ai-model-label" type="button" aria-haspopup="dialog">—</button></div>
         <div class="agent-body">
           <div class="mode-row">
             <span>MODE / 模式</span>
@@ -219,7 +241,6 @@
             <span class="agent-note" id="ai-note">READY</span>
             <button class="btn danger small" type="button" id="ai-stop" hidden>STOP</button>
           </div>
-          <p class="agent-hint">DIFF 模式的改动会直接显示在中间正文里。</p>
         </div>
       </aside>
     </div>
@@ -285,6 +306,37 @@
     <button class="btn ghost" type="button" id="confirm-cancel">取消</button>
     <button class="btn danger" type="button" id="confirm-ok">确认</button>
   </div>
+  </div>
+</dialog>
+
+<dialog id="briefing-dialog" class="modal modal-wide">
+  <div class="modal-frame">
+    <div class="modal-head">
+      <div>
+        <div class="eyebrow">/// EDITOR</div>
+        <h2 id="briefing-dialog-title">主题</h2>
+      </div>
+      <button class="icon-btn" type="button" data-close-dialog="briefing-dialog" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <textarea id="briefing-dialog-text" class="textarea" rows="18" spellcheck="false"></textarea>
+      <p class="modal-hint">输入即保存 · Esc 关闭</p>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="model-dialog" class="modal modal-model">
+  <div class="modal-frame">
+    <div class="modal-head">
+      <div>
+        <div class="eyebrow">/// MODEL</div>
+        <h2>模型</h2>
+      </div>
+      <button class="icon-btn" type="button" data-close-dialog="model-dialog" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="model-list" id="model-list"></div>
+    </div>
   </div>
 </dialog>
 

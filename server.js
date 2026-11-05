@@ -5,7 +5,7 @@ import { createStore } from './lib/store.js';
 import { searchBooks } from './lib/search.js';
 import { createAiClient } from './lib/ai.js';
 import { runAgent } from './lib/agent.js';
-import { applyOps, listProposals, getProposal, setProposalStatus } from './lib/proposals.js';
+import { applyDecisions, applyOps, listProposals, getProposal, setProposalStatus } from './lib/proposals.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = '0.1.0';
@@ -20,6 +20,15 @@ export function createApp({ dataDir, aiClient } = {}) {
 
   app.get('/api/health', (req, res) => {
     res.json({ ok: true, name: 'novelin', version: VERSION });
+  });
+
+  app.get('/api/models', async (req, res) => {
+    try {
+      const models = await ai.listModels();
+      return res.json({ models });
+    } catch (err) {
+      return res.status(502).json({ error: err.message || '读取模型列表失败' });
+    }
   });
 
   app.get('/api/search', async (req, res, next) => {
@@ -172,7 +181,9 @@ export function createApp({ dataDir, aiClient } = {}) {
       if (!proposal) return res.status(404).json({ error: '提案不存在' });
       if (proposal.status !== 'pending') return res.status(409).json({ error: '提案已处理' });
 
-      const result = await applyOps(store, req.params.id, proposal.ops);
+      const edits = Array.isArray(req.body?.edits) ? req.body.edits : null;
+      const ops = edits ? applyDecisions(proposal.ops, edits) : proposal.ops;
+      const result = await applyOps(store, req.params.id, ops);
       const updated = await setProposalStatus(store, req.params.id, proposal.id, 'accepted');
       return res.json({ applied: true, ...result, proposal: updated });
     } catch (err) {

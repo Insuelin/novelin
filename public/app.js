@@ -47,6 +47,8 @@ const state = {
   titleEditing: false,
   titleDirty: false,
   loadedHeading: '',
+  logLevel: 'info',
+  aiLogs: [],
   dirty: new Set(),
   saving: new Set(),
   saveAgain: new Set(),
@@ -64,6 +66,8 @@ const state = {
   dialogUsage: 'continue',
   creating: false,
   confirmResolve: null,
+  briefingSection: '',
+  briefingBookId: '',
   selectionText: '',
   aiRunning: false,
   aiAbort: null,
@@ -88,6 +92,85 @@ function escapeHtml(value) {
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function closeDropdowns(except = null) {
+  $$('.dropdown.open').forEach((dropdown) => {
+    if (dropdown === except) return;
+    dropdown.classList.remove('open');
+    const trigger = dropdown.querySelector('.dropdown-trigger');
+    const menu = dropdown.querySelector('.dropdown-menu');
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    if (menu) menu.hidden = true;
+  });
+}
+
+function initDropdown(root, { value, onChange } = {}) {
+  if (!root) return null;
+
+  const trigger = root.querySelector('.dropdown-trigger');
+  const menu = root.querySelector('.dropdown-menu');
+  const label = root.querySelector('.dropdown-label');
+  const items = $$('.dropdown-item', root);
+
+  const setValue = (next, { silent = false } = {}) => {
+    const item = items.find((button) => button.dataset.value === next) || items[0];
+    if (!item) return;
+    items.forEach((button) => button.classList.toggle('on', button === item));
+    if (label) label.textContent = item.textContent.trim();
+    root.dataset.value = item.dataset.value;
+    if (!silent && onChange) onChange(item.dataset.value);
+  };
+
+  const open = (nextOpen) => {
+    if (nextOpen) closeDropdowns(root);
+    root.classList.toggle('open', nextOpen);
+    if (trigger) trigger.setAttribute('aria-expanded', String(nextOpen));
+    if (menu) menu.hidden = !nextOpen;
+  };
+
+  trigger?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    open(menu.hidden);
+  });
+
+  trigger?.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      open(true);
+      const selected = items.find((item) => item.classList.contains('on')) || items[0];
+      selected?.focus();
+    }
+  });
+
+  items.forEach((item) => {
+    item.addEventListener('click', () => {
+      setValue(item.dataset.value);
+      open(false);
+      trigger?.focus();
+    });
+    item.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        open(false);
+        trigger?.focus();
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const index = items.indexOf(item);
+        const offset = event.key === 'ArrowDown' ? 1 : -1;
+        items[(index + offset + items.length) % items.length]?.focus();
+      } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        setValue(item.dataset.value);
+        open(false);
+        trigger?.focus();
+      }
+    });
+  });
+
+  root.addEventListener('click', (event) => event.stopPropagation());
+  if (value) setValue(value, { silent: true });
+  return { setValue, open };
 }
 
 function countWords(text) {
@@ -166,6 +249,9 @@ function usageLabel(usage) {
 }
 
 function toast(message, type = 'info', duration = 2800) {
+  if (type === 'error') aiLog('ERR', message, 'err');
+  else if (type === 'warn') aiLog('WARN', message, 'warn');
+
   const container = $('#toasts');
   if (!container) return;
   const element = document.createElement('div');
@@ -711,21 +797,21 @@ function scrollToReviewChange(last = false) {
   manuscript.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
 }
 
-function reviewChangeHtml(change) {
+function reviewChangeHtml(change, index) {
   const oldText = String(change.old || '');
   const newText = String(change.new || '');
   const blockLevel = /[\r\n]/.test(oldText) || /[\r\n]/.test(newText)
     || oldText.length + newText.length > 1600;
 
   if (blockLevel) {
-    return `<div class="ai-change-block">
+    return `<div class="ai-change-block" data-change="${index}">
       <div class="ai-old"><span class="ai-diff-label">OLD / 原文</span>${marked.parse(oldText, { breaks: true, gfm: true })}</div>
       <div class="ai-new"><span class="ai-diff-label">NEW / 改写</span>${marked.parse(newText, { breaks: true, gfm: true })}</div>
     </div>`;
   }
 
   const oldHtml = oldText ? `<del class="ai-del">${escapeHtml(oldText)}</del>` : '';
-  const newHtml = newText ? `<ins class="ai-ins">${marked.parseInline(newText)}</ins>` : '';
+  const newHtml = newText ? `<ins class="ai-ins" data-change="${index}">${marked.parseInline(newText)}</ins>` : '';
   return `${oldHtml}${newHtml}`;
 }
 
@@ -733,14 +819,57 @@ function buildReviewSource(review) {
   let source = '';
   let cursor = 0;
   const changes = [...(review.changes || [])].sort((a, b) => a.start - b.start);
-  for (const change of changes) {
-    if (change.start < cursor) continue;
+  changes.forEach((change, index) => {
+    if (change.start < cursor) return;
     source += review.text.slice(cursor, change.start);
-    source += reviewChangeHtml(change);
+    source += reviewChangeHtml(change, index);
     cursor = Math.max(cursor, change.end);
-  }
+  });
   source += review.text.slice(cursor);
   return source;
+}
+
+function reviewChangesSorted(review) {
+  return [...(review.changes || [])].sort((a, b) => a.start - b.start);
+}
+
+function growReviewEditor(element) {
+  element.style.height = 'auto';
+  element.style.height = `${element.scrollHeight}px`;
+}
+
+function hydrateReviewEditors(root) {
+  const review = state.aiReview;
+  if (!review || !root) return;
+  const changes = reviewChangesSorted(review);
+
+  $$('.ai-change-block[data-change]', root).forEach((block) => {
+    const change = changes[Number(block.dataset.change)];
+    const box = block.querySelector('.ai-new');
+    if (!change || !box) return;
+
+    const label = box.querySelector('.ai-diff-label');
+    [...box.childNodes].forEach((node) => {
+      if (node !== label) node.remove();
+    });
+
+    const textarea = document.createElement('textarea');
+    textarea.className = 'ai-new-input';
+    textarea.dataset.change = block.dataset.change;
+    textarea.spellcheck = false;
+    textarea.rows = 1;
+    textarea.value = change.edited !== undefined ? change.edited : change.new;
+    box.appendChild(textarea);
+    growReviewEditor(textarea);
+  });
+
+  $$('ins.ai-ins[data-change]', root).forEach((ins) => {
+    const change = changes[Number(ins.dataset.change)];
+    if (!change) return;
+    if (change.edited !== undefined) ins.textContent = change.edited;
+    ins.setAttribute('contenteditable', 'plaintext-only');
+    ins.setAttribute('spellcheck', 'false');
+  });
 }
 
 function renderPendingChapter(review) {
@@ -748,8 +877,9 @@ function renderPendingChapter(review) {
   const body = review.draft.trim()
     ? marked.parse(review.draft, { breaks: true, gfm: true })
     : '<p class="ai-pending-empty">AI 正在写下一章…</p>';
+  const heading = review.auto ? 'AI WRITING / 写入中' : 'PENDING CHAPTER / 待确认';
   return `<section class="ai-pending-chapter" id="ai-pending-chapter">
-    <div class="ai-pending-head"><span>PENDING CHAPTER / 待确认</span><span>${review.draftFinal ? 'READY' : 'STREAMING'}</span></div>
+    <div class="ai-pending-head"><span>${heading}</span><span>${review.draftFinal ? 'READY' : 'STREAMING'}</span></div>
     <div class="ai-pending-body" id="ai-pending-body">${body}</div>
     ${review.draftFinal ? '' : '<span class="ai-pending-cursor" aria-hidden="true"></span>'}
   </section>`;
@@ -818,6 +948,7 @@ function renderProse() {
   }
   if (review) html.push(renderPendingChapter(review));
   prose.innerHTML = DOMPurify.sanitize(html.join(''));
+  hydrateReviewEditors(prose);
   renderBlockMath(prose);
   renderMath(prose);
 
@@ -864,6 +995,7 @@ function updateReviewBar() {
 
   const pending = review.proposal?.status === 'pending';
   const changeCount = review.changes.length;
+  const prefix = review.auto ? 'AI WRITE' : 'AI DIFF';
   let label;
 
   if (review.status === 'proposal') {
@@ -874,13 +1006,13 @@ function updateReviewBar() {
     label = `AI DIFF · ${bits.length ? `${bits.join(' · ')} · ` : ''}待确认`;
   } else if (review.action === 'revise' && review.selectionWords) {
     const progress = review.progress ? ` · ${review.progress}` : '';
-    label = `AI DIFF · 正在改写选中 · ${review.selectionWords} 字${progress}`;
+    label = `${prefix} · 正在改写选中 · ${review.selectionWords} 字${progress}`;
   } else if (review.progress) {
-    label = `AI DIFF · ${review.progress}`;
+    label = `${prefix} · ${review.progress}`;
   } else if (review.action === 'chapter') {
-    label = `AI DIFF · 新章生成中${review.draft ? ` · ${formatNumber(countWords(review.draft))} 字` : ''}`;
+    label = `${prefix} · 新章生成中${review.draft ? ` · ${formatNumber(countWords(review.draft))} 字` : ''}`;
   } else {
-    label = `AI DIFF · ${changeCount ? `${changeCount} 处修改` : '分析中'}`;
+    label = `${prefix} · ${changeCount ? `${changeCount} 处修改 · ` : ''}${review.auto ? '写入中' : '分析中'}`;
   }
 
   const labelElement = $('#review-label');
@@ -942,12 +1074,13 @@ function markPendingSelection() {
   return Boolean(first);
 }
 
-function startReview(action, { selectionWords = 0, preserveSelection = false } = {}) {
+function startReview(action, { selectionWords = 0, preserveSelection = false, mode = 'diff' } = {}) {
   const book = state.current;
   if (!book) return;
 
   state.aiReview = {
     action,
+    auto: mode === 'auto',
     base: book.manuscript || '',
     text: book.manuscript || '',
     changes: [],
@@ -976,7 +1109,7 @@ function clearReview({ render = true } = {}) {
   if (render) renderProse();
 }
 
-function applyChangeToReview(review, op) {
+function applyChangeToReview(review, op, opIndex = null) {
   if (!review || !op || op.type !== 'edit_manuscript') return false;
 
   const oldText = String(op.old_string || '');
@@ -1000,6 +1133,9 @@ function applyChangeToReview(review, op) {
     end: index + newText.length,
     old: oldText,
     new: newText,
+    edited: undefined,
+    accepted: true,
+    opIndex,
   });
   review.changes.sort((a, b) => a.start - b.start);
 
@@ -1061,14 +1197,14 @@ function openProposalReview(proposal) {
 
   let hasOutline = false;
   const ops = Array.isArray(proposal.ops) ? proposal.ops : [];
-  for (const op of ops) {
-    if (op.type === 'edit_manuscript') applyChangeToReview(review, op);
+  ops.forEach((op, index) => {
+    if (op.type === 'edit_manuscript') applyChangeToReview(review, op, index);
     else if (op.type === 'edit_outline') hasOutline = true;
     else if (op.type === 'append_chapter') {
       review.draft = String(op.content || '');
       review.draftFinal = true;
     }
-  }
+  });
   if (hasOutline) review.notice = '大纲有修改，确认后写入左侧大纲。';
   if (!review.changes.length && !review.draftFinal && !hasOutline) {
     review.notice = '这份提案没有可预览的改动。';
@@ -1292,10 +1428,203 @@ function scheduleChapterRefresh() {
   }, 250);
 }
 
-function setManuscriptMode(mode) {
+const READ_BLOCK_SELECTOR = '#prose p, #prose h1, #prose h2, #prose h3, #prose h4, #prose li, #prose blockquote, #prose pre';
+
+function captureReadAnchor() {
+  const book = state.current;
+  const manuscript = $('.manuscript');
+  const prose = $('#prose');
+  if (!book || !manuscript || !prose || !state.chapters.length) return null;
+
+  const source = String(book.manuscript || '');
+  const stickyHeight = $('.ms-sticky')?.getBoundingClientRect().height || 0;
+  const viewportTop = manuscript.getBoundingClientRect().top + stickyHeight + 8;
+
+  let chapterIndex = 0;
+  state.chapterEls.forEach((element, index) => {
+    if (element && element.getBoundingClientRect().top <= viewportTop) chapterIndex = index;
+  });
+  chapterIndex = Math.max(0, Math.min(state.chapters.length - 1, chapterIndex));
+
+  const start = Math.max(0, state.chapters[chapterIndex]?.start || 0);
+  const end = state.chapters[chapterIndex + 1]?.start ?? source.length;
+
+  let fraction = 0;
+  const chapterEl = state.chapterEls[chapterIndex];
+  const nextEl = state.chapterEls[chapterIndex + 1];
+  if (chapterEl) {
+    const top = chapterEl.getBoundingClientRect().top;
+    const nextTop = nextEl ? nextEl.getBoundingClientRect().top : prose.getBoundingClientRect().bottom;
+    fraction = Math.max(0, Math.min(1, (viewportTop - top) / Math.max(1, nextTop - top)));
+  }
+
+  let block = null;
+  for (const element of $$(READ_BLOCK_SELECTOR, prose)) {
+    if (element.getBoundingClientRect().bottom > viewportTop + 1) {
+      block = element;
+      break;
+    }
+  }
+
+  let needle = '';
+  if (block && !block.closest('.ai-pending-chapter')) {
+    needle = String(block.textContent || '').trim().slice(0, 40);
+  }
+
+  let offset = Math.round(start + fraction * Math.max(0, end - start));
+  if (needle) {
+    const windowText = source.slice(start, end);
+    for (const length of [needle.length, 24, 16, 10, 6]) {
+      if (length <= 0) continue;
+      const at = windowText.indexOf(needle.slice(0, length));
+      if (at >= 0) {
+        offset = start + at;
+        break;
+      }
+    }
+  }
+
+  return {
+    chapterIndex,
+    offset: Math.max(0, Math.min(source.length, offset)),
+    fraction,
+    needle,
+  };
+}
+
+function scrollEditorToPosition(editor, position) {
+  const line = editor.value.slice(0, position).split('\n').length;
+  const lineHeight = parseFloat(getComputedStyle(editor).lineHeight) || 32;
+  editor.scrollTop = Math.max(0, (line - 3) * lineHeight);
+}
+
+function applyReadAnchorToEditor(anchor) {
+  const editor = $('#manuscript-editor');
+  const manuscript = $('.manuscript');
+  if (!editor || !anchor) return;
+  if (manuscript) manuscript.scrollTop = 0;
+
+  const position = Math.max(0, Math.min(editor.value.length, anchor.offset || 0));
+  editor.focus();
+  editor.setSelectionRange(position, position);
+  scrollEditorToPosition(editor, position);
+  setCurrentChapter(anchor.chapterIndex || 0);
+}
+
+function captureEditAnchor() {
+  const editor = $('#manuscript-editor');
+  const book = state.current;
+  if (!editor || !book) return null;
+
+  const value = editor.value;
+  let position = Math.max(0, Math.min(value.length, editor.selectionStart || 0));
+
+  const lineHeight = parseFloat(getComputedStyle(editor).lineHeight) || 32;
+  const topLine = Math.floor(editor.scrollTop / lineHeight);
+  const caretLine = value.slice(0, position).split('\n').length - 1;
+  const visibleLines = Math.max(1, Math.floor(editor.clientHeight / lineHeight));
+  if (caretLine < topLine || caretLine > topLine + visibleLines - 1) {
+    let nextPosition = 0;
+    let line = 0;
+    while (line < topLine && nextPosition < value.length) {
+      const newline = value.indexOf('\n', nextPosition);
+      if (newline < 0) break;
+      nextPosition = newline + 1;
+      line += 1;
+    }
+    position = nextPosition;
+  }
+
+  let chapterIndex = 0;
+  state.chapters.forEach((chapter, index) => {
+    if (chapter.start <= position) chapterIndex = index;
+  });
+  chapterIndex = Math.max(0, Math.min(state.chapters.length - 1, chapterIndex));
+
+  const start = state.chapters[chapterIndex]?.start || 0;
+  const end = state.chapters[chapterIndex + 1]?.start ?? value.length;
+  const fraction = Math.max(0, Math.min(1, (position - start) / Math.max(1, end - start)));
+
+  const lineStart = value.lastIndexOf('\n', Math.max(0, position - 1)) + 1;
+  let lineEnd = value.indexOf('\n', position);
+  if (lineEnd < 0) lineEnd = value.length;
+  const needle = value.slice(lineStart, lineEnd).trim()
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/^[-*>]\s+/, '')
+    .slice(0, 40);
+
+  return { chapterIndex, offset: position, fraction, needle };
+}
+
+function blockInChapter(element, chapterEl, nextEl) {
+  if (!chapterEl) return true;
+  if (element === chapterEl) return true;
+  if (!(chapterEl.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
+  if (nextEl && !(nextEl.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_PRECEDING)) return false;
+  return true;
+}
+
+function applyEditAnchorToReader(anchor) {
+  const manuscript = $('.manuscript');
+  const prose = $('#prose');
+  if (!manuscript || !prose || !anchor) return;
+
+  const stickyHeight = $('.ms-sticky')?.getBoundingClientRect().height || 0;
+  const topOffset = stickyHeight + 8;
+  const chapterEl = state.chapterEls[anchor.chapterIndex];
+  const nextEl = state.chapterEls[anchor.chapterIndex + 1];
+  const blocks = $$(READ_BLOCK_SELECTOR, prose);
+  let target = null;
+
+  if (anchor.needle) {
+    const candidates = anchor.needle.length > 12
+      ? [anchor.needle, anchor.needle.slice(0, 12)]
+      : [anchor.needle];
+    for (const needle of candidates) {
+      target = blocks.find((block) => blockInChapter(block, chapterEl, nextEl)
+        && String(block.textContent || '').includes(needle)) || null;
+      if (target) break;
+    }
+  }
+
+  if (target) {
+    const top = manuscript.scrollTop
+      + target.getBoundingClientRect().top
+      - manuscript.getBoundingClientRect().top
+      - topOffset;
+    manuscript.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+    updateChapterFromScroll();
+    return;
+  }
+
+  if (chapterEl) {
+    const chapterTop = chapterEl.getBoundingClientRect().top;
+    const nextTop = nextEl ? nextEl.getBoundingClientRect().top : prose.getBoundingClientRect().bottom;
+    const targetY = chapterTop + Math.max(0, nextTop - chapterTop) * anchor.fraction;
+    const top = manuscript.scrollTop
+      + targetY
+      - manuscript.getBoundingClientRect().top
+      - topOffset;
+    manuscript.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+    updateChapterFromScroll();
+    return;
+  }
+
+  manuscript.scrollTo({ top: 0, behavior: 'auto' });
+  updateChapterFromScroll();
+}
+
+function setManuscriptMode(mode, { preservePosition = false } = {}) {
   if (mode === 'edit' && state.aiReview) {
     toast('先处理 AI 提案，再手动编辑', 'error');
     return;
+  }
+
+  const previousMode = state.manuscriptMode;
+  let anchor = null;
+  if (preservePosition) {
+    if (previousMode === 'read' && mode === 'edit') anchor = captureReadAnchor();
+    else if (previousMode === 'edit' && mode === 'read') anchor = captureEditAnchor();
   }
 
   state.manuscriptMode = mode;
@@ -1313,8 +1642,18 @@ function setManuscriptMode(mode) {
 
   if (!editing) {
     renderProse();
+    if (anchor) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => applyEditAnchorToReader(anchor));
+      });
+    }
   } else {
-    requestAnimationFrame(updateChapterFromCursor);
+    const manuscript = $('.manuscript');
+    if (manuscript) manuscript.scrollTop = 0;
+    requestAnimationFrame(() => {
+      if (anchor) applyReadAnchorToEditor(anchor);
+      else updateChapterFromCursor();
+    });
   }
   updateReviewBar();
 }
@@ -1513,6 +1852,60 @@ function setAiState(label, tone = '') {
   if (stateElement) stateElement.dataset.state = tone;
 }
 
+function compactValue(value) {
+  if (value === null || value === undefined) return '';
+  let text;
+  try {
+    text = typeof value === 'string' ? value : JSON.stringify(value);
+  } catch {
+    text = String(value);
+  }
+  return text.length > 180 ? `${text.slice(0, 177)}...` : text;
+}
+
+function aiLog(tag, message, tone = '') {
+  const level = tone === 'err' ? 'error' : tone === 'warn' ? 'warn' : 'info';
+  const now = new Date();
+  state.aiLogs.push({
+    time: `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`,
+    tag,
+    text: String(message ?? ''),
+    level,
+  });
+  if (state.aiLogs.length > 200) state.aiLogs.splice(0, state.aiLogs.length - 200);
+  renderLog(level === 'error');
+}
+
+function renderLog(forceBottom = false) {
+  const log = $('#ai-log');
+  if (!log) return;
+
+  const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+  const matches = (entry) => {
+    if (state.logLevel === 'warn') return entry.level === 'warn' || entry.level === 'error';
+    if (state.logLevel === 'error') return entry.level === 'error';
+    return entry.level === 'info';
+  };
+
+  const entries = state.aiLogs.filter(matches);
+  log.innerHTML = entries.length
+    ? entries.map((entry) => {
+      const cls = entry.level === 'error' ? 'err' : entry.level;
+      return `<div class="log-line ${cls}"><time>${entry.time}</time><span class="tag">${escapeHtml(entry.tag)}</span><span class="txt">${escapeHtml(entry.text)}</span></div>`;
+    }).join('')
+    : '<div class="log-empty">暂无日志</div>';
+
+  const button = $('#log-level');
+  if (button) {
+    const label = state.logLevel === 'error' ? 'ERR' : state.logLevel.toUpperCase();
+    button.dataset.level = state.logLevel;
+    button.textContent = label;
+    button.setAttribute('aria-label', `日志等级 ${label}，点击切换`);
+  }
+
+  if (forceBottom || nearBottom) log.scrollTop = log.scrollHeight;
+}
+
 function updateAiControls() {
   const book = state.current;
   const enabled = Boolean(book?.meta?.aiEnabled);
@@ -1560,6 +1953,8 @@ function renderAgent({ reset = false } = {}) {
   if (reset || bookChanged) {
     state.aiBookId = book.meta.id;
     state.aiProposal = null;
+    aiLog('SYS', `BOOK / ${book.meta.title || '—'}`);
+    aiLog('SYS', `MODE / ${String(book.meta.aiMode || 'diff').toUpperCase()}`);
     loadPendingProposals(book.meta.id);
   }
 
@@ -1589,6 +1984,7 @@ async function setAiMode(mode) {
   });
   const wsStatus = $('#ws-status');
   if (wsStatus) wsStatus.textContent = `AI ${mode.toUpperCase()}`;
+  aiLog('SYS', `MODE / ${mode.toUpperCase()}`);
   updateAiControls();
 
   try {
@@ -1616,6 +2012,7 @@ async function loadPendingProposals(bookId) {
 
     const proposal = proposals[0];
     if (state.aiProposal?.id === proposal.id) return;
+    aiLog('SYS', proposals.length > 1 ? `待确认提案 ${proposals.length} 个` : '待确认提案');
     openProposalReview(proposal);
     if (proposals.length > 1) toast(`还有 ${proposals.length - 1} 个待确认提案`, 'info');
   } catch (err) {
@@ -1646,6 +2043,7 @@ function handleAiEvent(type, payload = {}) {
   }
 
   if (type === 'meta') {
+    aiLog('SYS', `${String(payload.mode || '').toUpperCase()} / ${String(payload.action || '').toUpperCase()} / ${payload.model || '—'}`);
     setAiState('RUNNING', 'running');
     return;
   }
@@ -1669,16 +2067,27 @@ function handleAiEvent(type, payload = {}) {
       }
       updateReviewBar();
     }
-    if (payload.phase === 'error') {
+    if (payload.phase === 'start') {
+      aiLog('TOOL', `${payload.name || 'tool'} ${compactValue(payload.args)}`);
+    } else if (payload.phase === 'end') {
+      aiLog('TOOL', `${payload.name || 'tool'} ✓ ${compactValue(payload.result)}`);
+    } else if (payload.phase === 'error') {
       toast(`${payload.name || '工具'}：${payload.message || '失败'}`, 'error');
     }
     return;
   }
 
-  if (type === 'written') return;
+  if (type === 'written') {
+    const changed = Array.isArray(payload.changed) ? payload.changed.join(' + ') : '正文';
+    aiLog('OK', `写入 ${changed}`, 'ok');
+    return;
+  }
 
   if (type === 'proposal') {
-    if (payload.proposal) openProposalReview(payload.proposal);
+    if (payload.proposal) {
+      aiLog('SYS', `提案待确认 / ${payload.proposal.id || ''}`);
+      openProposalReview(payload.proposal);
+    }
     return;
   }
 
@@ -1690,11 +2099,15 @@ function handleAiEvent(type, payload = {}) {
   if (type === 'error') {
     setAiState('ERROR', 'error');
     toast(payload.message || 'AI 运行失败', 'error');
+    if (payload.detail) aiLog('DETAIL', payload.detail, 'err');
     if (!state.aiProposal) clearReview();
     return;
   }
 
-  if (type === 'done') return;
+  if (type === 'done') {
+    aiLog('SYS', payload.ok ? 'DONE' : 'FAILED');
+    return;
+  }
 }
 
 async function streamAiResponse(response, onEvent) {
@@ -1785,10 +2198,11 @@ async function runAi({ action = 'chapter', useSelection = false } = {}) {
   state.aiRunning = true;
   state.aiAbort = controller;
   const selectionWords = useSelection ? countWords(selection?.text || '') : 0;
-  const preserveSelection = mode === 'diff' && action === 'revise' && useSelection
+  const preserveSelection = action === 'revise' && useSelection
     ? markPendingSelection()
     : false;
-  if (mode === 'diff') startReview(action, { selectionWords, preserveSelection });
+  const livePreview = mode === 'diff' || action === 'chapter' || action === 'revise';
+  if (livePreview) startReview(action, { selectionWords, preserveSelection, mode });
   else clearReview({ render: false });
   setAiState('RUNNING', 'running');
   updateAiControls();
@@ -1816,15 +2230,23 @@ async function runAi({ action = 'chapter', useSelection = false } = {}) {
     if (state.current?.meta.id !== bookId) return;
 
     if (written) {
+      aiLog('OK', '正文已更新，正在刷新', 'ok');
+      clearReview({ render: false });
       await refreshBookAfterAi({ scrollEnd: action === 'chapter' });
     }
-    if (mode === 'diff' && !state.aiProposal && !hadError) {
-      clearReview();
-      toast('AI 没有产生修改', 'info');
+    if (!state.aiProposal && !hadError) {
+      if (state.aiReview) {
+        clearReview();
+        if (!written) {
+          aiLog('SYS', 'AI 没有产生修改');
+          toast('AI 没有产生修改', 'info');
+        }
+      }
+      setAiState('DONE', 'done');
     }
-    if (!state.aiProposal && !hadError) setAiState('DONE', 'done');
   } catch (err) {
     if (err.name === 'AbortError' || controller.signal.aborted) {
+      aiLog('SYS', '已停止');
       if (state.current?.meta.id === bookId && !state.aiProposal) clearReview();
       if (state.current?.meta.id === bookId && !state.aiProposal) setAiState('STANDBY', '');
     } else {
@@ -1841,7 +2263,24 @@ async function runAi({ action = 'chapter', useSelection = false } = {}) {
 
 function stopAi() {
   if (!state.aiRunning || !state.aiAbort) return;
+  aiLog('SYS', '停止中…');
   state.aiAbort.abort();
+}
+
+function buildReviewDecisions() {
+  const review = state.aiReview;
+  if (!review || review.overlap) return null;
+
+  const edits = [];
+  for (const change of reviewChangesSorted(review)) {
+    if (!Number.isInteger(change.opIndex)) continue;
+    edits.push({
+      opIndex: change.opIndex,
+      accepted: change.accepted !== false,
+      newString: change.edited !== undefined ? change.edited : change.new,
+    });
+  }
+  return edits.length ? { edits } : null;
 }
 
 async function respondProposal(action) {
@@ -1857,10 +2296,11 @@ async function respondProposal(action) {
   try {
     const result = await api(
       `/books/${encodeURIComponent(bookId)}/proposals/${encodeURIComponent(proposal.id)}/${action}`,
-      { method: 'POST', body: {} },
+      { method: 'POST', body: action === 'accept' ? (buildReviewDecisions() || {}) : {} },
     );
 
     if (action === 'accept') {
+      aiLog('OK', '提案已写入', 'ok');
       toast('已写入正文', 'success');
       const scrollEnd = (proposal.ops || []).some((op) => op.type === 'append_chapter')
         || (Array.isArray(result.changed) && result.changed.includes('manuscript'));
@@ -1870,6 +2310,7 @@ async function respondProposal(action) {
       setAiState('DONE', 'done');
       await refreshBookAfterAi({ scrollEnd });
     } else {
+      aiLog('SYS', '提案已拒绝');
       toast('已拒绝提案');
       clearReview();
       if (!state.aiRunning) setAiState('STANDBY', '');
@@ -2001,6 +2442,150 @@ function settleConfirm(value) {
   if (resolve) resolve(value);
 }
 
+const BRIEFING_LABELS = {
+  theme: '主题 / THEME',
+  outline: '大纲 / OUTLINE',
+  notes: '笔记 / NOTES',
+};
+
+function openBriefingEditor(section) {
+  const book = state.current;
+  if (!book) return;
+
+  if (!BRIEFING_LABELS[section]) {
+    section = $('#briefing-tabs button.on')?.dataset.tab || 'theme';
+  }
+  const value = section === 'theme' ? (book.meta.theme || '') : (book[section] || '');
+
+  state.briefingSection = section;
+  state.briefingBookId = book.meta.id;
+
+  $('#briefing-dialog-title').textContent = BRIEFING_LABELS[section] || section;
+  const textarea = $('#briefing-dialog-text');
+  textarea.value = value;
+  textarea.dataset.section = section;
+
+  const dialog = $('#briefing-dialog');
+  if (!dialog.open) dialog.showModal();
+  setTimeout(() => {
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }, 30);
+}
+
+function syncBriefingDialog() {
+  const section = state.briefingSection;
+  const book = state.current;
+  if (!section || !book || book.meta.id !== state.briefingBookId) return;
+
+  const value = $('#briefing-dialog-text').value;
+  const inline = section === 'theme'
+    ? $('#theme-editor')
+    : section === 'outline'
+      ? $('#outline-editor')
+      : $('#notes-editor');
+  if (inline) inline.value = value;
+
+  if (section === 'theme') book.meta.theme = value;
+  else book[section] = value;
+
+  markDirty(section);
+}
+
+function flushBriefingDialog() {
+  if (!state.briefingSection) return;
+  saveAll().catch(() => {});
+}
+
+const MODEL_GROUP_ORDER = ['opencode-go', 'auto'];
+
+function openModelDialog() {
+  const book = state.current;
+  if (!book) return;
+  const dialog = $('#model-dialog');
+  if (!dialog) return;
+  if (!dialog.open) dialog.showModal();
+  const list = $('#model-list');
+  if (list) list.innerHTML = '<div class="model-empty">读取模型…</div>';
+  loadModelList(book.meta.id);
+}
+
+async function loadModelList(bookId) {
+  try {
+    const { models } = await api('/models');
+    if (!state.current || state.current.meta.id !== bookId) return;
+    renderModelList(Array.isArray(models) ? models : []);
+  } catch (err) {
+    const list = $('#model-list');
+    if (list) list.innerHTML = `<div class="model-empty">${escapeHtml(err.message || '读取模型失败')}</div>`;
+  }
+}
+
+function renderModelList(models) {
+  const list = $('#model-list');
+  if (!list) return;
+
+  const current = state.current?.meta.model || '';
+  const usable = models.filter((model) => model && model.id && model.toolCall !== false);
+  if (!usable.length) {
+    list.innerHTML = '<div class="model-empty">没有可用模型</div>';
+    return;
+  }
+
+  const groups = new Map();
+  for (const model of usable) {
+    const prefix = model.id.includes('/') ? model.id.split('/')[0] : 'models';
+    if (!groups.has(prefix)) groups.set(prefix, []);
+    groups.get(prefix).push(model);
+  }
+
+  const ordered = [...groups.entries()].sort((a, b) => {
+    const ai = MODEL_GROUP_ORDER.indexOf(a[0]);
+    const bi = MODEL_GROUP_ORDER.indexOf(b[0]);
+    if (ai >= 0 || bi >= 0) {
+      if (ai < 0) return 1;
+      if (bi < 0) return -1;
+      return ai - bi;
+    }
+    return a[0].localeCompare(b[0]);
+  });
+
+  const html = [];
+  for (const [prefix, items] of ordered) {
+    html.push(`<div class="model-group">${escapeHtml(prefix.toUpperCase())}</div>`);
+    for (const model of items) {
+      const on = model.id === current ? ' on' : '';
+      const ctx = model.contextWindow ? compactNumber(model.contextWindow) : '';
+      html.push(`<button class="model-item${on}" type="button" data-model="${escapeHtml(model.id)}"><span class="id">${escapeHtml(model.id)}</span>${ctx ? `<span class="ctx">${ctx}</span>` : ''}</button>`);
+    }
+  }
+  list.innerHTML = html.join('');
+}
+
+async function selectModel(model) {
+  const book = state.current;
+  const dialog = $('#model-dialog');
+  if (!book || !model) return;
+
+  if (model === book.meta.model) {
+    if (dialog?.open) dialog.close();
+    return;
+  }
+
+  try {
+    const { meta } = await api(`/books/${encodeURIComponent(book.meta.id)}/meta`, {
+      method: 'PUT',
+      body: { model },
+    });
+    if (state.current?.meta.id === book.meta.id) state.current.meta = meta;
+    const label = $('#ai-model-label');
+    if (label) label.textContent = meta.model || '—';
+    if (dialog?.open) dialog.close();
+  } catch (err) {
+    toast(err.message || '切换模型失败', 'error');
+  }
+}
+
 /* ---------- files / delete ---------- */
 async function handleFile(file) {
   if (!file) return;
@@ -2103,9 +2688,28 @@ function wireEvents() {
   });
 
   $('#search-input').addEventListener('input', onSearchInput);
-  $('#sort-select').addEventListener('change', (event) => {
-    state.sort = event.target.value;
-    renderLibrary();
+  initDropdown($('#sort-dropdown'), {
+    value: state.sort,
+    onChange: (value) => {
+      state.sort = value;
+      renderLibrary();
+    },
+  });
+
+  const LOG_LEVELS = ['info', 'warn', 'error'];
+  $('#log-level')?.addEventListener('click', () => {
+    const index = LOG_LEVELS.indexOf(state.logLevel);
+    state.logLevel = LOG_LEVELS[(index + 1) % LOG_LEVELS.length];
+    renderLog(true);
+  });
+  document.addEventListener('click', () => closeDropdowns());
+  renderLog(true);
+  window.addEventListener('error', (event) => {
+    aiLog('ERR', event.message || '页面脚本错误', 'err');
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason;
+    aiLog('ERR', String(reason?.message || reason || '未处理的 Promise 错误'), 'err');
   });
 
   $('#new-book-btn').addEventListener('click', () => openBookDialog());
@@ -2166,7 +2770,7 @@ function wireEvents() {
 
   $('#ms-mode').addEventListener('click', (event) => {
     const button = event.target.closest('[data-ms-mode]');
-    if (button) setManuscriptMode(button.dataset.msMode);
+    if (button) setManuscriptMode(button.dataset.msMode, { preservePosition: true });
   });
 
   $('#ms-title').addEventListener('click', startTitleEdit);
@@ -2199,6 +2803,31 @@ function wireEvents() {
     if (item) jumpToChapter(Number(item.dataset.chapter));
   });
 
+  $('#prose').addEventListener('input', (event) => {
+    const review = state.aiReview;
+    if (!review) return;
+    const changes = reviewChangesSorted(review);
+
+    const textarea = event.target.closest?.('.ai-new-input');
+    if (textarea) {
+      const change = changes[Number(textarea.dataset.change)];
+      if (!change) return;
+      change.edited = textarea.value;
+      change.accepted = textarea.value.trim().length > 0;
+      growReviewEditor(textarea);
+      return;
+    }
+
+    const ins = event.target.closest?.('ins.ai-ins[contenteditable]');
+    if (ins) {
+      const change = changes[Number(ins.dataset.change)];
+      if (!change) return;
+      const text = ins.textContent || '';
+      change.edited = text;
+      change.accepted = text.trim().length > 0;
+    }
+  });
+
   const manuscriptEl = $('.manuscript');
   let chapterScrollFrame = 0;
   manuscriptEl.addEventListener('scroll', () => {
@@ -2228,6 +2857,22 @@ function wireEvents() {
   syncStickyHeight();
 
   $('#save-briefing').addEventListener('click', () => saveAll({ notify: true }));
+  $$('.editor-box').forEach((box) => {
+    box.addEventListener('mousedown', (event) => {
+      const rect = box.getBoundingClientRect();
+      if (event.clientX < rect.right - 26 || event.clientY < rect.bottom - 26) return;
+      event.preventDefault();
+      const section = box.querySelector('.editor')?.id.replace(/-editor$/, '');
+      openBriefingEditor(section);
+    });
+  });
+  $('#briefing-dialog-text').addEventListener('input', syncBriefingDialog);
+  $('#briefing-dialog').addEventListener('close', flushBriefingDialog);
+  $('#ai-model-label')?.addEventListener('click', openModelDialog);
+  $('#model-list')?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-model]');
+    if (button) selectModel(button.dataset.model);
+  });
   $('#save-manuscript').addEventListener('click', () => saveAll({ notify: true }));
 
   ['#ai-revise', '#selection-revise'].forEach((selector) => {
@@ -2316,13 +2961,20 @@ function wireEvents() {
   window.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
       event.preventDefault();
+      if ($('#briefing-dialog')?.open) {
+        flushBriefingDialog();
+        return;
+      }
       if (state.view === 'workspace') saveAll({ notify: true });
     }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
       event.preventDefault();
       if (state.view === 'library') $('#search-input').focus();
     }
-    if (event.key === 'Escape') closeChapterMenu();
+    if (event.key === 'Escape') {
+      closeChapterMenu();
+      closeDropdowns();
+    }
   });
 
   window.addEventListener('beforeunload', (event) => {

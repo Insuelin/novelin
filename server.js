@@ -4,11 +4,68 @@ import { fileURLToPath } from 'node:url';
 import { createStore } from './lib/store.js';
 import { searchBooks } from './lib/search.js';
 import { createAiClient } from './lib/ai.js';
-import { runAgent } from './lib/agent.js';
+import { runAgent, summarizeChapter, upsertSummary } from './lib/agent.js';
 import { applyDecisions, applyOps, listProposals, getProposal, setProposalStatus } from './lib/proposals.js';
+import { normalizeAgentSettings } from './lib/agent-settings.js';
+import { parseChapters } from './lib/chapters.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = '0.1.0';
+
+/**
+ * 提案接受后给新增章节补摘要。摘要失败不影响正文，只回一条 warning。
+ */
+async function generateAppendedSummaries({ store, ai, bookId, ops }) {
+  const appended = (Array.isArray(ops) ? ops : []).filter((op) => op && op.type === 'append_chapter');
+  if (!appended.length) return { generated: 0, warning: null };
+
+  const fresh = await store.getBook(bookId);
+  if (!fresh) return { generated: 0, warning: '摘要生成失败：书籍不存在' };
+
+  const chapters = parseChapters(fresh.manuscript, fresh.meta.title).chapters;
+  const targets = chapters.slice(-appended.length);
+
+  let summaries = fresh.summaries;
+  let generated = 0;
+  let warning = null;
+
+  for (const chapter of targets) {
+    const existing = summaries.find((item) => item && item.index === chapter.index);
+    if (existing && existing.source === 'user') continue;
+
+    const body = fresh.manuscript.slice(chapter.bodyStart, chapter.end).replace(/\s+$/, '');
+    let result = null;
+    try {
+      result = await summarizeChapter({ ai, title: chapter.title, body });
+    } catch {
+      result = null;
+    }
+    if (!result) {
+      warning = '章节已写入，但摘要生成失败，请稍后补齐';
+      continue;
+    }
+
+    summaries = upsertSummary(summaries, {
+      index: chapter.index,
+      title: chapter.title,
+      summary: result.summary,
+      tags: result.tags,
+      source: 'ai',
+      sourceHash: result.sourceHash,
+      at: new Date().toISOString(),
+    });
+    generated += 1;
+  }
+
+  if (generated) await store.updateSummaries(bookId, summaries);
+  return { generated, warning };
+}
+
+function publicSummary(entry) {
+  if (!entry) return null;
+  const { stale, orphan, ...rest } = entry;
+  return rest;
+}
 
 export function createApp({ dataDir, aiClient } = {}) {
   const store = createStore(dataDir || process.env.DATA_DIR || path.join(__dirname, 'data'));
@@ -93,8 +150,21 @@ export function createApp({ dataDir, aiClient } = {}) {
       ) {
         return res.status(400).json({ error: 'selection.text 必须是字符串，且不超过 8000 字' });
       }
+      for (const key of ['before', 'after']) {
+        if (selection[key] !== undefined) {
+          if (typeof selection[key] !== 'string' || selection[key].length > 1000) {
+            return res.status(400).json({ error: `selection.${key} 必须是字符串，且不超过 1000 字` });
+          }
+        }
+      }
+      if (selection.chapter !== undefined) {
+        if (typeof selection.chapter !== 'string' || selection.chapter.length > 200) {
+          return res.status(400).json({ error: 'selection.chapter 必须是不超过 200 字的字符串' });
+        }
+      }
     }
 
+    const settings = normalizeAgentSettings(book.meta);
     const finalInstruction = instruction || '写下一章，承接前文。';
 
     res.status(200);
@@ -119,7 +189,15 @@ export function createApp({ dataDir, aiClient } = {}) {
       res.write(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`);
     };
 
-    send('meta', { bookId: book.meta.id, mode, action, model });
+    send('meta', {
+      bookId: book.meta.id,
+      mode,
+      action,
+      model,
+      maxTokens: settings.maxTokens,
+      maxSteps: settings.maxSteps,
+      reasoningEffort: settings.reasoningEffort,
+    });
 
     try {
       const result = await runAgent({
@@ -131,6 +209,10 @@ export function createApp({ dataDir, aiClient } = {}) {
         action,
         selection,
         model,
+        maxTokens: settings.maxTokens,
+        maxSteps: settings.maxSteps,
+        reasoningEffort: settings.reasoningEffort,
+        researchModel: settings.researchModel,
         signal: controller.signal,
         onEvent: (event) => send(event.type, event),
       });
@@ -150,6 +232,137 @@ export function createApp({ dataDir, aiClient } = {}) {
     } finally {
       res.off('close', onClose);
       if (!res.writableEnded) res.end();
+    }
+  });
+
+  app.get('/api/books/:id/chapters', async (req, res, next) => {
+    try {
+      const book = await store.getBook(req.params.id);
+      if (!book) return res.status(404).json({ error: '书籍不存在' });
+
+      const { chapters } = parseChapters(book.manuscript, book.meta.title);
+      const byIndex = new Map();
+      for (const item of book.summaries) {
+        if (Number.isInteger(item.index)) byIndex.set(item.index, item);
+      }
+
+      const list = chapters.map((chapter) => {
+        const summary = byIndex.get(chapter.index);
+        return {
+          index: chapter.index,
+          title: chapter.title,
+          chars: chapter.chars,
+          hasSummary: Boolean(summary),
+          summary: summary?.summary || '',
+          tags: summary?.tags || {},
+          at: summary?.at || '',
+          source: summary?.source || '',
+          stale: Boolean(summary?.stale),
+        };
+      });
+
+      const orphans = book.summaries
+        .filter((item) => item.index === null)
+        .map((item) => publicSummary(item));
+
+      return res.json({ chapters: list, orphans, updatedAt: book.meta.updatedAt });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  app.get('/api/books/:id/summaries', async (req, res, next) => {
+    try {
+      const book = await store.getBook(req.params.id);
+      if (!book) return res.status(404).json({ error: '书籍不存在' });
+      return res.json({
+        version: 2,
+        chapters: book.summaries.map(publicSummary),
+      });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  app.put('/api/books/:id/summaries/:index', async (req, res, next) => {
+    try {
+      const index = Number(req.params.index);
+      if (!Number.isInteger(index) || index < 1) {
+        return res.status(400).json({ error: '章节号必须是正整数' });
+      }
+
+      const book = await store.getBook(req.params.id);
+      if (!book) return res.status(404).json({ error: '书籍不存在' });
+
+      const expected = req.body?.expectedUpdatedAt;
+      if (expected !== undefined && String(expected) !== String(book.meta.updatedAt)) {
+        return res.status(409).json({ error: '正文或摘要已经变过，请刷新后再改' });
+      }
+
+      const { chapters } = parseChapters(book.manuscript, book.meta.title);
+      const chapter = chapters.find((item) => item.index === index);
+      if (!chapter) return res.status(404).json({ error: '章节不存在' });
+
+      const summary = String(req.body?.summary ?? '').trim();
+      if (!summary) return res.status(400).json({ error: 'summary 不能为空' });
+      if (summary.length > 4000) return res.status(400).json({ error: 'summary 太长' });
+
+      const existing = book.summaries.find((item) => item.index === index);
+      const tags = req.body?.tags && typeof req.body.tags === 'object'
+        ? req.body.tags
+        : (existing?.tags || {});
+
+      const entry = {
+        index,
+        title: chapter.title,
+        summary,
+        tags,
+        source: 'user',
+        sourceHash: existing?.sourceHash || '',
+        at: new Date().toISOString(),
+      };
+
+      await store.updateSummaries(req.params.id, upsertSummary(book.summaries, entry));
+      return res.json({ summary: entry });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  app.post('/api/books/:id/summaries/generate', async (req, res, next) => {
+    try {
+      const index = Number(req.body?.index);
+      if (!Number.isInteger(index) || index < 1) {
+        return res.status(400).json({ error: '章节号必须是正整数' });
+      }
+
+      const book = await store.getBook(req.params.id);
+      if (!book) return res.status(404).json({ error: '书籍不存在' });
+
+      const { chapters } = parseChapters(book.manuscript, book.meta.title);
+      const chapter = chapters.find((item) => item.index === index);
+      if (!chapter) return res.status(404).json({ error: '章节不存在' });
+
+      const body = book.manuscript.slice(chapter.bodyStart, chapter.end).replace(/\s+$/, '');
+      if (!body.trim()) return res.status(400).json({ error: '这一章还没有正文' });
+
+      const generated = await summarizeChapter({ ai, title: chapter.title, body });
+      if (!generated) return res.status(502).json({ error: '摘要生成失败，稍后再试' });
+
+      const entry = {
+        index,
+        title: chapter.title,
+        summary: generated.summary,
+        tags: generated.tags,
+        source: 'ai',
+        sourceHash: generated.sourceHash,
+        at: new Date().toISOString(),
+      };
+
+      await store.updateSummaries(req.params.id, upsertSummary(book.summaries, entry));
+      return res.json({ summary: entry });
+    } catch (err) {
+      return next(err);
     }
   });
 
@@ -185,7 +398,21 @@ export function createApp({ dataDir, aiClient } = {}) {
       const ops = edits ? applyDecisions(proposal.ops, edits) : proposal.ops;
       const result = await applyOps(store, req.params.id, ops);
       const updated = await setProposalStatus(store, req.params.id, proposal.id, 'accepted');
-      return res.json({ applied: true, ...result, proposal: updated });
+
+      let summary = { generated: 0, warning: null };
+      try {
+        summary = await generateAppendedSummaries({ store, ai, bookId: req.params.id, ops });
+      } catch (err) {
+        summary = { generated: 0, warning: `章节已写入，但摘要生成失败：${err.message}` };
+      }
+
+      return res.json({
+        applied: true,
+        ...result,
+        proposal: updated,
+        summaryGenerated: summary.generated,
+        summaryWarning: summary.warning,
+      });
     } catch (err) {
       return next(err);
     }

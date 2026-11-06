@@ -31,6 +31,24 @@ const API = '/api';
 const ACCENT_KEY = 'novelin.accent';
 const ACCENTS = ['amber', 'orange', 'white', 'cyan'];
 
+const TOKEN_PRESETS = [2048, 4096, 8192, 16384];
+const STEP_PRESETS = [6, 10, 16];
+const TOKEN_MIN = 256;
+const TOKEN_MAX = 65536;
+const DEFAULT_MAX_TOKENS = 8192;
+const DEFAULT_MAX_STEPS = 10;
+const REASONING_LABELS = {
+  none: 'OFF',
+  minimal: 'MIN',
+  low: 'LOW',
+  medium: 'MID',
+  high: 'HIGH',
+  xhigh: 'XHIGH',
+  max: 'MAX',
+  ultra: 'ULTRA',
+};
+const SUMMARY_TAG_LABELS = { characters: '人物', locations: '地点', items: '道具', hooks: '伏笔' };
+
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
@@ -69,6 +87,7 @@ const state = {
   briefingSection: '',
   briefingBookId: '',
   selectionText: '',
+  selectionContext: null,
   aiRunning: false,
   aiAbort: null,
   aiMode: 'diff',
@@ -76,6 +95,21 @@ const state = {
   aiProposal: null,
   aiReview: null,
   aiDraftTimer: null,
+  aiSettingsSave: Promise.resolve(),
+  aiSettingsSeq: 0,
+  aiSettingsError: false,
+  modelCatalog: new Map(),
+  modelCatalogPromise: null,
+  modelCatalogTried: false,
+  summaryBookId: '',
+  summaryChapters: [],
+  summaryOrphans: [],
+  summaryUpdatedAt: '',
+  summaryBusy: false,
+  summaryStop: false,
+  summaryTimers: new Map(),
+  summarySaving: new Set(),
+  summaryDirty: new Set(),
   stickyObserver: null,
 };
 
@@ -92,6 +126,19 @@ function escapeHtml(value) {
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function setText(element, text) {
+  const value = String(text ?? '');
+  if (element && element.textContent !== value) element.textContent = value;
+}
+
+function setDisabled(element, value) {
+  if (element && element.disabled !== value) element.disabled = value;
+}
+
+function setHidden(element, value) {
+  if (element && element.hidden !== value) element.hidden = value;
 }
 
 function closeDropdowns(except = null) {
@@ -715,6 +762,13 @@ function renderWorkspace() {
   }
 
   closeChapterMenu();
+  if (state.summaryBookId && state.summaryBookId !== book.meta.id) {
+    const summaryDialog = $('#summary-dialog');
+    if (summaryDialog?.open) summaryDialog.close();
+    state.summaryBookId = '';
+    state.summaryChapters = [];
+    state.summaryOrphans = [];
+  }
   if (state.aiBookId && state.aiBookId !== book.meta.id) clearReview({ render: false });
   const stats = book.stats || { words: 0, chapters: 0 };
   const aiLabel = book.meta.aiEnabled
@@ -1811,6 +1865,75 @@ function updateBookSummary(bookId) {
 }
 
 /* ---------- selection ---------- */
+function blockElementFor(node, prose) {
+  const element = node?.nodeType === 1 ? node : node?.parentElement;
+  return element?.closest(READ_BLOCK_SELECTOR, prose) || null;
+}
+
+function selectionSurroundings(range, prose) {
+  const blocks = $$(READ_BLOCK_SELECTOR, prose);
+  const startBlock = blockElementFor(range.startContainer, prose);
+  const endBlock = blockElementFor(range.endContainer, prose);
+  let before = '';
+  let after = '';
+
+  if (startBlock) {
+    const prefixRange = document.createRange();
+    prefixRange.selectNodeContents(startBlock);
+    try {
+      prefixRange.setEnd(range.startContainer, range.startOffset);
+      before = prefixRange.toString();
+    } catch {
+      before = '';
+    }
+  }
+  if (endBlock) {
+    const suffixRange = document.createRange();
+    suffixRange.selectNodeContents(endBlock);
+    try {
+      suffixRange.setStart(range.endContainer, range.endOffset);
+      after = suffixRange.toString();
+    } catch {
+      after = '';
+    }
+  }
+
+  const startIndex = startBlock ? blocks.indexOf(startBlock) : -1;
+  const endIndex = endBlock ? blocks.indexOf(endBlock) : -1;
+  if (startIndex >= 0) {
+    for (let i = startIndex - 1; i >= 0 && before.length < 300; i -= 1) {
+      before = `${blocks[i].textContent}\n${before}`;
+    }
+  }
+  if (endIndex >= 0) {
+    for (let i = endIndex + 1; i < blocks.length && after.length < 300; i += 1) {
+      after = `${after}\n${blocks[i].textContent}`;
+    }
+  }
+
+  return {
+    before: before.replace(/\s+/g, ' ').trim().slice(-300),
+    after: after.replace(/\s+/g, ' ').trim().slice(0, 300),
+  };
+}
+
+function selectionChapterTitle(range, prose) {
+  const headings = $$('h1, h2, h3, h4, h5, h6', prose);
+  let title = '';
+  for (const heading of headings) {
+    if (heading.contains(range.startContainer)) {
+      title = heading.textContent.trim();
+      continue;
+    }
+    if (heading.compareDocumentPosition(range.startContainer) & Node.DOCUMENT_POSITION_FOLLOWING) {
+      title = heading.textContent.trim();
+    } else {
+      break;
+    }
+  }
+  return title.slice(0, 200);
+}
+
 function checkSelection() {
   if (state.view !== 'workspace' || state.manuscriptMode !== 'read') {
     hideSelection();
@@ -1825,23 +1948,181 @@ function checkSelection() {
     return;
   }
 
-  const text = selection.toString().trim();
-  if (!text) {
+  const rawText = selection.toString().trim();
+  if (!rawText) {
     hideSelection();
     return;
   }
 
-  state.selectionText = text;
-  $('#selection-info').textContent = `SELECTED · ${countWords(text)} 字`;
+  const range = selection.getRangeAt(0);
+  const surroundings = selectionSurroundings(range, prose);
+  state.selectionText = rawText.slice(0, 8000);
+  state.selectionContext = {
+    text: state.selectionText,
+    before: surroundings.before,
+    after: surroundings.after,
+    chapter: selectionChapterTitle(range, prose),
+    truncated: rawText.length > 8000,
+  };
+  setText($('#selection-info'), `SELECTED · ${countWords(rawText)} 字`);
   $('#selection-note').hidden = false;
   updateAiControls();
 }
 
 function hideSelection() {
-  state.selectionText = '';
   const note = $('#selection-note');
-  if (note) note.hidden = true;
-  updateAiControls();
+  const had = Boolean(state.selectionText || state.selectionContext) || Boolean(note && !note.hidden);
+  state.selectionText = '';
+  state.selectionContext = null;
+  if (note && !note.hidden) note.hidden = true;
+  if (had) updateAiControls();
+}
+
+/* ---------- agent settings ---------- */
+function modelInfo(id) {
+  return state.modelCatalog.get(id) || null;
+}
+
+async function ensureModelCatalog() {
+  if (state.modelCatalog.size || state.modelCatalogTried) return state.modelCatalog;
+  if (!state.modelCatalogPromise) {
+    state.modelCatalogPromise = (async () => {
+      try {
+        const { models } = await api('/models');
+        const map = new Map();
+        for (const model of Array.isArray(models) ? models : []) {
+          if (model?.id) map.set(model.id, model);
+        }
+        state.modelCatalog = map;
+      } catch {
+        state.modelCatalog = new Map();
+      } finally {
+        state.modelCatalogTried = true;
+        state.modelCatalogPromise = null;
+      }
+      return state.modelCatalog;
+    })();
+  }
+  return state.modelCatalogPromise;
+}
+
+function queueMetaPatch(patch) {
+  const book = state.current;
+  if (!book) return Promise.resolve();
+
+  const bookId = book.meta.id;
+  Object.assign(book.meta, patch);
+  const seq = ++state.aiSettingsSeq;
+
+  const run = async () => {
+    try {
+      const { meta } = await api(`/books/${encodeURIComponent(bookId)}/meta`, {
+        method: 'PUT',
+        body: patch,
+      });
+      state.aiSettingsError = false;
+      if (state.current?.meta.id !== bookId) return;
+      if (seq !== state.aiSettingsSeq) return;
+      state.current.meta = { ...state.current.meta, ...meta };
+      renderAgentSettings();
+    } catch (err) {
+      state.aiSettingsError = true;
+      toast(`设置没保存：${err.message}`, 'error');
+    }
+  };
+
+  state.aiSettingsSave = state.aiSettingsSave.then(run, run);
+  return state.aiSettingsSave;
+}
+
+function renderAgentSettings() {
+  const book = state.current;
+  const fieldset = $('#ai-settings');
+  if (!book || !fieldset) return;
+
+  const enabled = Boolean(book.meta.aiEnabled);
+  const busy = state.aiRunning || state.aiProposal?.status === 'pending';
+  setDisabled(fieldset, !enabled || busy);
+
+  const maxTokens = Number(book.meta.maxTokens) || DEFAULT_MAX_TOKENS;
+  const maxSteps = STEP_PRESETS.includes(Number(book.meta.maxSteps))
+    ? Number(book.meta.maxSteps)
+    : DEFAULT_MAX_STEPS;
+  const info = modelInfo(book.meta.model);
+  const maxOutput = Number(info?.maxOutput) || 0;
+
+  $$('#ai-max-tokens [data-max-tokens]').forEach((button) => {
+    const value = Number(button.dataset.maxTokens);
+    setHidden(button, Boolean(maxOutput) && value > maxOutput && value !== TOKEN_PRESETS[0]);
+    button.classList.toggle('on', value === maxTokens);
+  });
+
+  $$('#ai-max-steps [data-max-steps]').forEach((button) => {
+    button.classList.toggle('on', Number(button.dataset.maxSteps) === maxSteps);
+  });
+
+  if (maxOutput && maxTokens > maxOutput) {
+    const fits = TOKEN_PRESETS.filter((value) => value <= maxOutput);
+    const next = fits.length ? fits[fits.length - 1] : Math.max(TOKEN_MIN, Math.min(TOKEN_MAX, maxOutput));
+    if (next !== maxTokens && next >= TOKEN_MIN) queueMetaPatch({ maxTokens: next });
+  }
+
+  const levels = Array.isArray(info?.reasoningLevels) ? info.reasoningLevels : [];
+  const row = $('#ai-reasoning-row');
+  const container = $('#ai-reasoning');
+  if (row && container) {
+    setHidden(row, levels.length === 0);
+    if (levels.length) {
+      const current = String(book.meta.reasoningEffort || '');
+      const values = ['', ...levels];
+      const signature = values.join('|');
+      if (container.dataset.signature !== signature) {
+        container.dataset.signature = signature;
+        container.innerHTML = values.map((value) => {
+          const label = value ? (REASONING_LABELS[value] || value.toUpperCase()) : '默认';
+          return `<button type="button" data-reasoning-effort="${escapeHtml(value)}" class="${value === current ? 'on' : ''}">${escapeHtml(label)}</button>`;
+        }).join('');
+      } else {
+        $$('button', container).forEach((button) => {
+          button.classList.toggle('on', button.dataset.reasoningEffort === current);
+        });
+      }
+      if (current && !levels.includes(current)) {
+        queueMetaPatch({ reasoningEffort: '' });
+      }
+    }
+  }
+
+  const summaries = Array.isArray(book.summaries) ? book.summaries : [];
+  const count = summaries.filter((item) => Number.isInteger(item.index)).length;
+  setText($('#ai-summary-count'), `${count} 条`);
+}
+
+function setMaxTokens(value) {
+  const book = state.current;
+  if (!book) return;
+  const number = Math.max(TOKEN_MIN, Math.min(TOKEN_MAX, Math.trunc(Number(value) || DEFAULT_MAX_TOKENS)));
+  if (number === Number(book.meta.maxTokens)) return;
+  aiLog('SYS', `OUTPUT / ${number} tok`);
+  queueMetaPatch({ maxTokens: number });
+}
+
+function setMaxSteps(value) {
+  const book = state.current;
+  if (!book) return;
+  const number = Number(value);
+  if (!STEP_PRESETS.includes(number) || number === Number(book.meta.maxSteps)) return;
+  aiLog('SYS', `ROUNDS / ${number}`);
+  queueMetaPatch({ maxSteps: number });
+}
+
+function setReasoningEffort(value) {
+  const book = state.current;
+  if (!book) return;
+  const next = String(value || '');
+  if (next === String(book.meta.reasoningEffort || '')) return;
+  aiLog('SYS', `DEPTH / ${next || '默认'}`);
+  queueMetaPatch({ reasoningEffort: next });
 }
 
 /* ---------- agent ---------- */
@@ -1915,25 +2196,23 @@ function updateAiControls() {
   const hasSelection = Boolean(state.selectionText);
 
   const instruction = $('#ai-instruction');
-  if (instruction) instruction.disabled = !enabled || busy;
+  setDisabled(instruction, !enabled || busy);
   ['#ai-next', '#ai-outline'].forEach((selector) => {
-    const button = $(selector);
-    if (button) button.disabled = !enabled || busy;
+    setDisabled($(selector), !enabled || busy);
   });
-  const revise = $('#ai-revise');
-  if (revise) revise.disabled = !enabled || busy || !hasSelection;
-  const selectionRevise = $('#selection-revise');
-  if (selectionRevise) selectionRevise.disabled = !enabled || busy || !hasSelection;
+  setDisabled($('#ai-revise'), !enabled || busy || !hasSelection);
+  setDisabled($('#selection-revise'), !enabled || busy || !hasSelection);
   $$('#ai-mode button').forEach((button) => {
-    button.disabled = !enabled || busy;
+    setDisabled(button, !enabled || busy);
   });
-  const stop = $('#ai-stop');
-  if (stop) stop.hidden = !running;
+  setHidden($('#ai-stop'), !running);
+
+  setDisabled($('#ai-model-label'), !enabled || busy);
 
   const note = $('#ai-note');
   if (note) {
     note.classList.toggle('busy', running);
-    note.textContent = running
+    setText(note, running
       ? 'RUNNING / 运行中'
       : pending
         ? 'DIFF / 等待确认'
@@ -1941,8 +2220,10 @@ function updateAiControls() {
           ? 'AI 未开启'
           : state.aiMode === 'auto'
             ? 'AUTO / 直接写入'
-            : 'DIFF / 先看提案';
+            : 'DIFF / 先看提案');
   }
+
+  renderAgentSettings();
 }
 
 function renderAgent({ reset = false } = {}) {
@@ -1969,6 +2250,9 @@ function renderAgent({ reset = false } = {}) {
   else if (!state.aiRunning && !state.aiProposal && (reset || bookChanged)) setAiState('STANDBY', '');
 
   updateAiControls();
+  ensureModelCatalog().then(() => {
+    if (state.current?.meta.id === book.meta.id) renderAgentSettings();
+  });
   updateReviewBar();
 }
 
@@ -1987,15 +2271,7 @@ async function setAiMode(mode) {
   aiLog('SYS', `MODE / ${mode.toUpperCase()}`);
   updateAiControls();
 
-  try {
-    const { meta } = await api(`/books/${encodeURIComponent(book.meta.id)}/meta`, {
-      method: 'PUT',
-      body: { aiMode: mode },
-    });
-    if (state.current?.meta.id === book.meta.id) state.current.meta = meta;
-  } catch (err) {
-    toast(`模式没保存：${err.message}`, 'error');
-  }
+  await queueMetaPatch({ aiMode: mode });
 }
 
 async function loadPendingProposals(bookId) {
@@ -2023,7 +2299,10 @@ async function loadPendingProposals(bookId) {
 function toolProgressLabel(name) {
   return {
     read_manuscript: '读取正文…',
-    search_manuscript: '搜索正文…',
+    read_chapter: '读取章节…',
+    read_summary: '读取摘要…',
+    list_chapters: '查看章节…',
+    research: '检索资料…',
     read_outline: '读取大纲…',
     read_notes: '读取设定…',
     edit_manuscript: '应用修改…',
@@ -2043,8 +2322,28 @@ function handleAiEvent(type, payload = {}) {
   }
 
   if (type === 'meta') {
-    aiLog('SYS', `${String(payload.mode || '').toUpperCase()} / ${String(payload.action || '').toUpperCase()} / ${payload.model || '—'}`);
+    const settings = [
+      payload.maxTokens ? `${payload.maxTokens} tok` : '',
+      payload.maxSteps ? `${payload.maxSteps} 轮` : '',
+      payload.reasoningEffort ? `think ${payload.reasoningEffort}` : '',
+    ].filter(Boolean).join(' · ');
+    aiLog('SYS', `${String(payload.mode || '').toUpperCase()} / ${String(payload.action || '').toUpperCase()} / ${payload.model || '—'}${settings ? ` · ${settings}` : ''}`);
     setAiState('RUNNING', 'running');
+    return;
+  }
+
+  if (type === 'research') {
+    const question = payload.question ? String(payload.question) : '';
+    if (payload.phase === 'start') {
+      aiLog('RESEARCH', question || '检索');
+    } else if (payload.phase === 'end') {
+      const warnings = Array.isArray(payload.warnings) && payload.warnings.length
+        ? ` · ${payload.warnings.length} 条引文被丢弃`
+        : '';
+      aiLog('RESEARCH', `${payload.rounds || 0} 轮 / ${payload.quotes || 0} 条引文${warnings}`, warnings ? 'warn' : 'ok');
+    } else {
+      aiLog('RESEARCH', payload.message || '检索失败', 'warn');
+    }
     return;
   }
 
@@ -2092,7 +2391,13 @@ function handleAiEvent(type, payload = {}) {
   }
 
   if (type === 'warning') {
+    aiLog('WARN', payload.message || '警告', 'warn');
     toast(payload.message || '警告', 'warn');
+    return;
+  }
+
+  if (type === 'notice') {
+    aiLog('SYS', payload.message || '', 'ok');
     return;
   }
 
@@ -2174,8 +2479,17 @@ async function runAi({ action = 'chapter', useSelection = false } = {}) {
       : '按大纲重写当前章节，保持人物、设定和文风一致。');
   }
 
+  const context = state.selectionContext;
   const selection = useSelection
-    ? (state.selectionText ? { text: state.selectionText.slice(0, 8000) } : null)
+    ? (state.selectionText && context
+      ? {
+        text: state.selectionText.slice(0, 8000),
+        before: String(context.before || '').slice(-1000),
+        after: String(context.after || '').slice(0, 1000),
+        chapter: String(context.chapter || '').slice(0, 200),
+        truncated: Boolean(context.truncated),
+      }
+      : (state.selectionText ? { text: state.selectionText.slice(0, 8000) } : null))
     : null;
   if (useSelection && !selection) {
     toast('先在正文里选中一段', 'error');
@@ -2185,6 +2499,12 @@ async function runAi({ action = 'chapter', useSelection = false } = {}) {
   await flushSave();
   if (state.dirty.size) {
     toast('正文还没保存成功，先处理保存错误', 'error');
+    return;
+  }
+
+  await state.aiSettingsSave;
+  if (state.aiSettingsError) {
+    toast('运行设置还没保存成功，稍后重试', 'error');
     return;
   }
 
@@ -2302,6 +2622,12 @@ async function respondProposal(action) {
     if (action === 'accept') {
       aiLog('OK', '提案已写入', 'ok');
       toast('已写入正文', 'success');
+      if (result.summaryWarning) {
+        aiLog('WARN', result.summaryWarning, 'warn');
+        toast(result.summaryWarning, 'warn');
+      } else if (result.summaryGenerated) {
+        aiLog('OK', `摘要 +${result.summaryGenerated}`, 'ok');
+      }
       const scrollEnd = (proposal.ops || []).some((op) => op.type === 'append_chapter')
         || (Array.isArray(result.changed) && result.changed.includes('manuscript'));
       state.aiReview = null;
@@ -2513,8 +2839,13 @@ function openModelDialog() {
 async function loadModelList(bookId) {
   try {
     const { models } = await api('/models');
+    const list = Array.isArray(models) ? models : [];
+    for (const model of list) {
+      if (model?.id) state.modelCatalog.set(model.id, model);
+    }
+    state.modelCatalogTried = true;
     if (!state.current || state.current.meta.id !== bookId) return;
-    renderModelList(Array.isArray(models) ? models : []);
+    renderModelList(list);
   } catch (err) {
     const list = $('#model-list');
     if (list) list.innerHTML = `<div class="model-empty">${escapeHtml(err.message || '读取模型失败')}</div>`;
@@ -2567,23 +2898,325 @@ async function selectModel(model) {
   const dialog = $('#model-dialog');
   if (!book || !model) return;
 
+  if (state.aiRunning || state.aiProposal?.status === 'pending') {
+    toast('运行中或等待确认时不能切换模型', 'error');
+    return;
+  }
+
   if (model === book.meta.model) {
     if (dialog?.open) dialog.close();
     return;
   }
 
-  try {
-    const { meta } = await api(`/books/${encodeURIComponent(book.meta.id)}/meta`, {
-      method: 'PUT',
-      body: { model },
-    });
-    if (state.current?.meta.id === book.meta.id) state.current.meta = meta;
-    const label = $('#ai-model-label');
-    if (label) label.textContent = meta.model || '—';
-    if (dialog?.open) dialog.close();
-  } catch (err) {
-    toast(err.message || '切换模型失败', 'error');
+  await ensureModelCatalog();
+  const info = modelInfo(model);
+  const maxOutput = Number(info?.maxOutput) || 0;
+  const patch = { model };
+
+  if (maxOutput && Number(book.meta.maxTokens || DEFAULT_MAX_TOKENS) > maxOutput) {
+    const fits = TOKEN_PRESETS.filter((value) => value <= maxOutput);
+    patch.maxTokens = fits.length
+      ? fits[fits.length - 1]
+      : Math.max(TOKEN_MIN, Math.min(TOKEN_MAX, maxOutput));
   }
+
+  const levels = Array.isArray(info?.reasoningLevels) ? info.reasoningLevels : [];
+  if (book.meta.reasoningEffort && !levels.includes(book.meta.reasoningEffort)) {
+    patch.reasoningEffort = '';
+  }
+
+  const label = $('#ai-model-label');
+  if (label) label.textContent = model;
+  aiLog('SYS', `MODEL / ${model}${patch.maxTokens ? ` · ${patch.maxTokens} tok` : ''}`);
+  if (dialog?.open) dialog.close();
+  renderAgentSettings();
+  await queueMetaPatch(patch);
+}
+
+/* ---------- summaries ---------- */
+function updateSummaryHint(text) {
+  const hint = $('#summary-hint');
+  if (hint) hint.textContent = text;
+}
+
+function summaryTagHtml(tags) {
+  const chips = [];
+  for (const [key, label] of Object.entries(SUMMARY_TAG_LABELS)) {
+    const list = Array.isArray(tags?.[key]) ? tags[key] : [];
+    for (const item of list) {
+      if (!item) continue;
+      chips.push(`<span class="summary-tag"><b>${escapeHtml(label)}</b>${escapeHtml(item)}</span>`);
+    }
+  }
+  return chips.length ? `<div class="summary-tags">${chips.join('')}</div>` : '';
+}
+
+function updateSummaryEntry(chapter) {
+  const book = state.current;
+  if (!book) return;
+  if (!Array.isArray(book.summaries)) book.summaries = [];
+  const entry = {
+    index: chapter.index,
+    title: chapter.title,
+    summary: chapter.summary,
+    tags: chapter.tags || {},
+    source: chapter.source || 'ai',
+    at: chapter.at || '',
+  };
+  const at = book.summaries.findIndex((item) => item?.index === chapter.index);
+  if (at >= 0) book.summaries[at] = { ...book.summaries[at], ...entry };
+  else book.summaries.push(entry);
+  renderAgentSettings();
+}
+
+function renderSummaryList() {
+  const list = $('#summary-list');
+  const book = state.current;
+  if (!list || !book) return;
+
+  const chapters = state.summaryChapters;
+  const busy = state.summaryBusy;
+  const enabled = Boolean(book.meta.aiEnabled);
+  const html = [];
+
+  if (!chapters.length) {
+    html.push('<div class="model-empty">正文还没有章节</div>');
+  }
+
+  for (const chapter of chapters) {
+    const missing = !chapter.hasSummary || !String(chapter.summary || '').trim();
+    const badges = [];
+    if (missing) {
+      badges.push('<span class="summary-badge missing">缺失</span>');
+    } else {
+      if (chapter.stale) badges.push('<span class="summary-badge stale">可能过期</span>');
+      badges.push(`<span class="summary-badge ${chapter.source === 'user' ? 'user' : ''}">${chapter.source === 'user' ? '用户' : 'AI'}</span>`);
+    }
+
+    const empty = !chapter.chars;
+    const disabled = busy || empty || !enabled;
+    html.push(`<div class="summary-item" data-summary-item="${chapter.index}">
+      <div class="summary-head">
+        <span class="summary-no">CH ${pad2(chapter.index)}</span>
+        <span class="summary-title">${escapeHtml(chapter.title)}</span>
+        <span class="summary-badges">${badges.join('')}<span>${formatNumber(chapter.chars)} 字</span></span>
+      </div>
+      <textarea class="textarea summary-text" rows="3" data-summary-index="${chapter.index}" ${disabled ? 'disabled' : ''} placeholder="${empty ? '这一章还没有正文' : '还没有摘要'}">${escapeHtml(chapter.summary || '')}</textarea>
+      ${summaryTagHtml(chapter.tags)}
+      <div class="summary-item-actions">
+        <button class="text-btn" type="button" data-summary-regenerate="${chapter.index}" ${disabled ? 'disabled' : ''}>重新生成</button>
+      </div>
+    </div>`);
+  }
+
+  if (state.summaryOrphans.length) {
+    const orphans = state.summaryOrphans.map((item) => `<div class="summary-orphan">
+      <div class="summary-head">
+        <span class="summary-title">${escapeHtml(item.title || '未命名')}</span>
+        <span class="summary-badges"><span class="summary-badge">未匹配</span></span>
+      </div>
+      <p>${escapeHtml(item.summary || '')}</p>
+    </div>`).join('');
+    html.push(`<div class="summary-orphans"><div class="summary-orphan-head">未匹配的旧摘要</div>${orphans}</div>`);
+  }
+
+  list.innerHTML = html.join('');
+
+  const generate = $('#summary-generate-missing');
+  if (generate) generate.disabled = busy || !enabled;
+  const stop = $('#summary-stop');
+  if (stop) stop.hidden = !busy;
+}
+
+async function loadSummaries() {
+  const book = state.current;
+  if (!book) return;
+  const bookId = book.meta.id;
+  state.summaryBookId = bookId;
+
+  const list = $('#summary-list');
+  if (list) list.innerHTML = '<div class="model-empty">读取章节…</div>';
+
+  try {
+    const data = await api(`/books/${encodeURIComponent(bookId)}/chapters`);
+    if (state.summaryBookId !== bookId) return;
+
+    state.summaryChapters = (Array.isArray(data.chapters) ? data.chapters : []).map((item) => ({
+      ...item,
+      summary: String(item.summary || ''),
+      tags: item.tags || {},
+    }));
+    state.summaryOrphans = Array.isArray(data.orphans) ? data.orphans : [];
+    state.summaryUpdatedAt = String(data.updatedAt || '');
+
+    const missing = state.summaryChapters.filter((chapter) => chapter.chars > 0
+      && (!chapter.hasSummary || !String(chapter.summary || '').trim())).length;
+    updateSummaryHint(missing
+      ? `${missing} 章还没有摘要。改过的摘要会标成用户。`
+      : '每章都有摘要。改过的摘要会标成用户。');
+    renderSummaryList();
+  } catch (err) {
+    if (list) list.innerHTML = `<div class="model-empty">${escapeHtml(err.message || '读取章节失败')}</div>`;
+    toast(err.message || '读取章节失败', 'error');
+  }
+}
+
+function openSummaryDialog() {
+  const book = state.current;
+  if (!book) return;
+  const dialog = $('#summary-dialog');
+  if (!dialog) return;
+
+  state.summaryStop = false;
+  for (const timer of state.summaryTimers.values()) clearTimeout(timer);
+  state.summaryTimers.clear();
+
+  if (!dialog.open) dialog.showModal();
+  updateSummaryHint('读取章节…');
+  loadSummaries();
+}
+
+function scheduleSummarySave(index) {
+  clearTimeout(state.summaryTimers.get(index));
+  state.summaryTimers.set(index, setTimeout(() => {
+    state.summaryTimers.delete(index);
+    saveSummary(index);
+  }, 800));
+}
+
+async function saveSummary(index) {
+  const book = state.current;
+  const chapter = state.summaryChapters.find((item) => item.index === index);
+  if (!book || !chapter || state.summaryBusy) return;
+
+  const bookId = book.meta.id;
+  const value = String(chapter.summary || '').trim();
+  if (!value) {
+    toast('摘要不能为空，没有保存', 'error');
+    return;
+  }
+
+  if (state.summarySaving.has(index)) {
+    state.summaryDirty.add(index);
+    return;
+  }
+
+  state.summarySaving.add(index);
+  try {
+    const { summary } = await api(`/books/${encodeURIComponent(bookId)}/summaries/${index}`, {
+      method: 'PUT',
+      body: { summary: value },
+    });
+    if (state.summaryBookId !== bookId) return;
+
+    const latest = state.summaryChapters.find((item) => item.index === index);
+    if (!latest) return;
+    latest.tags = summary.tags || latest.tags || {};
+    latest.source = 'user';
+    latest.at = summary.at || latest.at;
+    latest.hasSummary = true;
+    updateSummaryEntry(latest);
+
+    if (String(latest.summary || '').trim() !== value) {
+      state.summaryDirty.add(index);
+    }
+  } catch (err) {
+    toast(err.message || '摘要没保存成功', 'error');
+  } finally {
+    state.summarySaving.delete(index);
+    if (state.summaryDirty.delete(index)) scheduleSummarySave(index);
+    renderAgentSettings();
+  }
+}
+
+async function flushSummaryTimers() {
+  const indexes = [...state.summaryTimers.keys()];
+  for (const index of indexes) {
+    clearTimeout(state.summaryTimers.get(index));
+    state.summaryTimers.delete(index);
+  }
+  await Promise.all(indexes.map((index) => saveSummary(index)));
+}
+
+async function regenerateSummary(index, { confirmUser = true, allowBusy = false } = {}) {
+  const book = state.current;
+  const chapter = state.summaryChapters.find((item) => item.index === index);
+  if (!book || !chapter) return false;
+  if (state.summaryBusy && !allowBusy) return false;
+
+  if (confirmUser && chapter.source === 'user') {
+    const ok = await confirmDialog({
+      title: '重新生成摘要',
+      text: `第 ${index} 章摘要你手改过，重新生成会覆盖。继续？`,
+      okLabel: '重新生成',
+    });
+    if (!ok) return false;
+  }
+
+  try {
+    const { summary } = await api(`/books/${encodeURIComponent(book.meta.id)}/summaries/generate`, {
+      method: 'POST',
+      body: { index },
+    });
+    if (state.summaryBookId !== book.meta.id) return false;
+
+    Object.assign(chapter, {
+      summary: String(summary.summary || ''),
+      tags: summary.tags || {},
+      source: 'ai',
+      at: summary.at || '',
+      hasSummary: true,
+      stale: false,
+    });
+    updateSummaryEntry(chapter);
+    if (!state.summaryBusy) renderSummaryList();
+    return true;
+  } catch (err) {
+    toast(err.message || '摘要生成失败', 'error');
+    return false;
+  }
+}
+
+async function backfillSummaries() {
+  const book = state.current;
+  if (!book || state.summaryBusy) return;
+  const bookId = book.meta.id;
+
+  await flushSummaryTimers();
+  const targets = state.summaryChapters.filter((chapter) => chapter.chars > 0
+    && (!chapter.hasSummary || !String(chapter.summary || '').trim())
+    && chapter.source !== 'user');
+
+  if (!targets.length) {
+    toast('没有缺失的摘要', 'info');
+    return;
+  }
+
+  state.summaryBusy = true;
+  state.summaryStop = false;
+  renderSummaryList();
+  updateSummaryHint(`补齐中 0/${targets.length}`);
+
+  let done = 0;
+  let failed = 0;
+  for (const chapter of targets) {
+    if (state.summaryStop || state.current?.meta.id !== bookId) break;
+    updateSummaryHint(`补齐中 ${done}/${targets.length} · 第 ${chapter.index} 章`);
+    const ok = await regenerateSummary(chapter.index, { confirmUser: false, allowBusy: true });
+    if (ok) done += 1;
+    else failed += 1;
+  }
+
+  const stopped = state.summaryStop;
+  state.summaryBusy = false;
+  state.summaryStop = false;
+  if (state.current?.meta.id === bookId) {
+    renderSummaryList();
+    updateSummaryHint(stopped
+      ? `已停止 · 完成 ${done}/${targets.length}`
+      : `补齐完成 ${done}/${targets.length}${failed ? ` · 失败 ${failed}` : ''}`);
+  }
+  if (failed) toast(`有 ${failed} 章摘要没生成成功`, 'warn', 4000);
 }
 
 /* ---------- files / delete ---------- */
@@ -2872,6 +3505,52 @@ function wireEvents() {
   $('#model-list')?.addEventListener('click', (event) => {
     const button = event.target.closest('[data-model]');
     if (button) selectModel(button.dataset.model);
+  });
+
+  $('#ai-settings')?.addEventListener('click', (event) => {
+    const token = event.target.closest('[data-max-tokens]');
+    if (token) {
+      setMaxTokens(token.dataset.maxTokens);
+      return;
+    }
+    const step = event.target.closest('[data-max-steps]');
+    if (step) {
+      setMaxSteps(step.dataset.maxSteps);
+      return;
+    }
+    const reasoning = event.target.closest('[data-reasoning-effort]');
+    if (reasoning) {
+      setReasoningEffort(reasoning.dataset.reasoningEffort);
+      return;
+    }
+    if (event.target.closest('#ai-summary-count')) openSummaryDialog();
+  });
+
+  $('#summary-list')?.addEventListener('input', (event) => {
+    const textarea = event.target.closest('[data-summary-index]');
+    if (!textarea) return;
+    const index = Number(textarea.dataset.summaryIndex);
+    const chapter = state.summaryChapters.find((item) => item.index === index);
+    if (!chapter) return;
+    chapter.summary = textarea.value;
+    chapter.hasSummary = Boolean(textarea.value.trim());
+    scheduleSummarySave(index);
+  });
+
+  $('#summary-list')?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-summary-regenerate]');
+    if (!button) return;
+    regenerateSummary(Number(button.dataset.summaryRegenerate));
+  });
+
+  $('#summary-generate-missing')?.addEventListener('click', backfillSummaries);
+  $('#summary-stop')?.addEventListener('click', () => {
+    state.summaryStop = true;
+    updateSummaryHint('停止中…等当前这一章完成');
+  });
+  $('#summary-dialog')?.addEventListener('close', () => {
+    if (state.summaryBusy) state.summaryStop = true;
+    flushSummaryTimers().catch(() => {});
   });
   $('#save-manuscript').addEventListener('click', () => saveAll({ notify: true }));
 

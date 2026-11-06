@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NOVELIN — AI Narrative Terminal</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/vendor/katex/katex.min.css">
 </head>
@@ -230,13 +231,42 @@
               <button type="button" data-ai-mode="diff">DIFF</button>
             </div>
           </div>
-          <label class="field-label" for="ai-instruction">INSTRUCTION / 指令</label>
-          <textarea id="ai-instruction" class="agent-input" rows="3" placeholder="想让 AI 做什么？例如：写下一章，承接前文。"></textarea>
+          <fieldset class="agent-settings" id="ai-settings">
+            <div class="setting-row">
+              <span class="setting-label">OUTPUT / 输出</span>
+              <div class="segmented small" id="ai-max-tokens">
+                <button type="button" data-max-tokens="2048">2K</button>
+                <button type="button" data-max-tokens="4096">4K</button>
+                <button type="button" data-max-tokens="8192" class="on">8K</button>
+                <button type="button" data-max-tokens="16384">16K</button>
+              </div>
+            </div>
+            <div class="setting-row">
+              <span class="setting-label">ROUNDS / 轮次</span>
+              <div class="segmented small" id="ai-max-steps">
+                <button type="button" data-max-steps="6">6</button>
+                <button type="button" data-max-steps="10" class="on">10</button>
+                <button type="button" data-max-steps="16">16</button>
+              </div>
+            </div>
+            <div class="setting-row" id="ai-reasoning-row" hidden>
+              <span class="setting-label">DEPTH / 深度</span>
+              <div class="segmented small" id="ai-reasoning"></div>
+            </div>
+            <div class="setting-row" id="ai-summary-row">
+              <span class="setting-label">SUMMARY / 摘要</span>
+              <button class="setting-value" type="button" id="ai-summary-count">— 条</button>
+            </div>
+          </fieldset>
+        </div>
+        <div class="agent-composer">
           <div class="quick">
             <button class="btn wide" type="button" id="ai-next">写下一章 / NEXT</button>
             <button class="btn ghost" type="button" id="ai-revise" disabled>改写选中</button>
             <button class="btn ghost" type="button" id="ai-outline">按大纲重写</button>
           </div>
+          <label class="field-label" for="ai-instruction">INSTRUCTION / 指令</label>
+          <textarea id="ai-instruction" class="agent-input" rows="3" placeholder="想让 AI 做什么？例如：写下一章，承接前文。"></textarea>
           <div class="agent-actions">
             <span class="agent-note" id="ai-note">READY</span>
             <button class="btn danger small" type="button" id="ai-stop" hidden>STOP</button>
@@ -336,6 +366,28 @@
     </div>
     <div class="modal-body">
       <div class="model-list" id="model-list"></div>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="summary-dialog" class="modal modal-wide">
+  <div class="modal-frame">
+    <div class="modal-head">
+      <div>
+        <div class="eyebrow">/// SUMMARIES / 章节摘要</div>
+        <h2>摘要</h2>
+      </div>
+      <button class="icon-btn" type="button" data-close-dialog="summary-dialog" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="summary-toolbar">
+        <p class="modal-hint" id="summary-hint">按章节号列出。改过的摘要会标成用户。</p>
+        <div class="summary-actions">
+          <button class="btn ghost small" type="button" id="summary-generate-missing">补齐缺失</button>
+          <button class="btn danger small" type="button" id="summary-stop" hidden>停止</button>
+        </div>
+      </div>
+      <div class="summary-list" id="summary-list"></div>
     </div>
   </div>
 </dialog>

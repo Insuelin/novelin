@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { createStore } from './lib/store.js';
 import { searchBooks } from './lib/search.js';
 import { createAiClient } from './lib/ai.js';
-import { runAgent, summarizeChapter, upsertSummary } from './lib/agent.js';
+import { runAgent, summarizeChapter } from './lib/agent.js';
 import { applyDecisions, applyOps, listProposals, getProposal, setProposalStatus } from './lib/proposals.js';
 import { normalizeAgentSettings } from './lib/agent-settings.js';
 import { parseChapters } from './lib/chapters.js';
@@ -25,27 +25,27 @@ async function generateAppendedSummaries({ store, ai, bookId, ops }) {
   const chapters = parseChapters(fresh.manuscript, fresh.meta.title).chapters;
   const targets = chapters.slice(-appended.length);
 
-  let summaries = fresh.summaries;
   let generated = 0;
   let warning = null;
 
   for (const chapter of targets) {
-    const existing = summaries.find((item) => item && item.index === chapter.index);
+    const existing = fresh.summaries.find((item) => item && item.index === chapter.index);
     if (existing && existing.source === 'user') continue;
 
     const body = fresh.manuscript.slice(chapter.bodyStart, chapter.end).replace(/\s+$/, '');
     let result = null;
+    let failure = null;
     try {
       result = await summarizeChapter({ ai, title: chapter.title, body });
-    } catch {
-      result = null;
+    } catch (err) {
+      failure = err;
     }
     if (!result) {
-      warning = '章节已写入，但摘要生成失败，请稍后补齐';
+      warning = `章节已写入，但摘要生成失败：${failure?.message || '模型没有返回摘要'}`;
       continue;
     }
 
-    summaries = upsertSummary(summaries, {
+    await store.upsertSummary(bookId, {
       index: chapter.index,
       title: chapter.title,
       summary: result.summary,
@@ -57,7 +57,6 @@ async function generateAppendedSummaries({ store, ai, bookId, ops }) {
     generated += 1;
   }
 
-  if (generated) await store.updateSummaries(bookId, summaries);
   return { generated, warning };
 }
 
@@ -322,7 +321,7 @@ export function createApp({ dataDir, aiClient } = {}) {
         at: new Date().toISOString(),
       };
 
-      await store.updateSummaries(req.params.id, upsertSummary(book.summaries, entry));
+      await store.upsertSummary(req.params.id, entry);
       return res.json({ summary: entry });
     } catch (err) {
       return next(err);
@@ -346,8 +345,13 @@ export function createApp({ dataDir, aiClient } = {}) {
       const body = book.manuscript.slice(chapter.bodyStart, chapter.end).replace(/\s+$/, '');
       if (!body.trim()) return res.status(400).json({ error: '这一章还没有正文' });
 
-      const generated = await summarizeChapter({ ai, title: chapter.title, body });
-      if (!generated) return res.status(502).json({ error: '摘要生成失败，稍后再试' });
+      let generated = null;
+      try {
+        generated = await summarizeChapter({ ai, title: chapter.title, body });
+      } catch (err) {
+        return res.status(502).json({ error: err.message || '摘要生成失败' });
+      }
+      if (!generated) return res.status(502).json({ error: '模型没有返回摘要' });
 
       const entry = {
         index,
@@ -359,7 +363,7 @@ export function createApp({ dataDir, aiClient } = {}) {
         at: new Date().toISOString(),
       };
 
-      await store.updateSummaries(req.params.id, upsertSummary(book.summaries, entry));
+      await store.upsertSummary(req.params.id, entry);
       return res.json({ summary: entry });
     } catch (err) {
       return next(err);

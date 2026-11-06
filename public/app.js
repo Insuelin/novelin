@@ -48,6 +48,7 @@ const REASONING_LABELS = {
   ultra: 'ULTRA',
 };
 const SUMMARY_TAG_LABELS = { characters: '人物', locations: '地点', items: '道具', hooks: '伏笔' };
+const SUMMARY_CONCURRENCY = 5;
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -3138,11 +3139,11 @@ async function flushSummaryTimers() {
   await Promise.all(indexes.map((index) => saveSummary(index)));
 }
 
-async function regenerateSummary(index, { confirmUser = true, allowBusy = false } = {}) {
+async function regenerateSummary(index, { confirmUser = true, allowBusy = false, silent = false } = {}) {
   const book = state.current;
   const chapter = state.summaryChapters.find((item) => item.index === index);
-  if (!book || !chapter) return false;
-  if (state.summaryBusy && !allowBusy) return false;
+  if (!book || !chapter) return { ok: false, error: '章节不存在' };
+  if (state.summaryBusy && !allowBusy) return { ok: false, error: '正在补齐' };
 
   if (confirmUser && chapter.source === 'user') {
     const ok = await confirmDialog({
@@ -3150,7 +3151,7 @@ async function regenerateSummary(index, { confirmUser = true, allowBusy = false 
       text: `第 ${index} 章摘要你手改过，重新生成会覆盖。继续？`,
       okLabel: '重新生成',
     });
-    if (!ok) return false;
+    if (!ok) return { ok: false, error: '已取消' };
   }
 
   try {
@@ -3158,7 +3159,7 @@ async function regenerateSummary(index, { confirmUser = true, allowBusy = false 
       method: 'POST',
       body: { index },
     });
-    if (state.summaryBookId !== book.meta.id) return false;
+    if (state.summaryBookId !== book.meta.id) return { ok: false, error: '已切换书籍' };
 
     Object.assign(chapter, {
       summary: String(summary.summary || ''),
@@ -3170,10 +3171,10 @@ async function regenerateSummary(index, { confirmUser = true, allowBusy = false 
     });
     updateSummaryEntry(chapter);
     if (!state.summaryBusy) renderSummaryList();
-    return true;
+    return { ok: true };
   } catch (err) {
-    toast(err.message || '摘要生成失败', 'error');
-    return false;
+    if (!silent) toast(err.message || '摘要生成失败', 'error');
+    return { ok: false, error: err.message || '摘要生成失败' };
   }
 }
 
@@ -3195,28 +3196,59 @@ async function backfillSummaries() {
   state.summaryBusy = true;
   state.summaryStop = false;
   renderSummaryList();
-  updateSummaryHint(`补齐中 0/${targets.length}`);
 
+  const poolSize = Math.min(SUMMARY_CONCURRENCY, targets.length);
+  updateSummaryHint(`补齐中 0/${targets.length} · 并发 ${poolSize}`);
+
+  let cursor = 0;
   let done = 0;
   let failed = 0;
-  for (const chapter of targets) {
-    if (state.summaryStop || state.current?.meta.id !== bookId) break;
-    updateSummaryHint(`补齐中 ${done}/${targets.length} · 第 ${chapter.index} 章`);
-    const ok = await regenerateSummary(chapter.index, { confirmUser: false, allowBusy: true });
-    if (ok) done += 1;
-    else failed += 1;
-  }
+  let active = 0;
+  let firstError = '';
+
+  const worker = async () => {
+    for (;;) {
+      if (state.summaryStop || state.current?.meta.id !== bookId) return;
+      const position = cursor;
+      cursor += 1;
+      if (position >= targets.length) return;
+
+      const chapter = targets[position];
+      active += 1;
+      updateSummaryHint(`补齐中 ${done}/${targets.length} · 进行中 ${active}`);
+
+      const result = await regenerateSummary(chapter.index, {
+        confirmUser: false,
+        allowBusy: true,
+        silent: true,
+      });
+
+      active -= 1;
+      if (result.ok) {
+        done += 1;
+      } else {
+        failed += 1;
+        if (!firstError) firstError = result.error || '';
+      }
+      updateSummaryHint(`补齐中 ${done}/${targets.length} · 进行中 ${active}`);
+    }
+  };
+
+  await Promise.all(Array.from({ length: poolSize }, () => worker()));
 
   const stopped = state.summaryStop;
   state.summaryBusy = false;
   state.summaryStop = false;
   if (state.current?.meta.id === bookId) {
     renderSummaryList();
+    const suffix = failed ? ` · 失败 ${failed}` : '';
     updateSummaryHint(stopped
-      ? `已停止 · 完成 ${done}/${targets.length}`
-      : `补齐完成 ${done}/${targets.length}${failed ? ` · 失败 ${failed}` : ''}`);
+      ? `已停止 · 完成 ${done}/${targets.length}${suffix}`
+      : `补齐完成 ${done}/${targets.length}${suffix}`);
   }
-  if (failed) toast(`有 ${failed} 章摘要没生成成功`, 'warn', 4000);
+  if (failed) {
+    toast(`有 ${failed} 章摘要没生成成功${firstError ? `：${firstError}` : ''}`, 'warn', 5000);
+  }
 }
 
 /* ---------- files / delete ---------- */
@@ -3546,7 +3578,7 @@ function wireEvents() {
   $('#summary-generate-missing')?.addEventListener('click', backfillSummaries);
   $('#summary-stop')?.addEventListener('click', () => {
     state.summaryStop = true;
-    updateSummaryHint('停止中…等当前这一章完成');
+    updateSummaryHint('停止中…等已发出的章节完成');
   });
   $('#summary-dialog')?.addEventListener('close', () => {
     if (state.summaryBusy) state.summaryStop = true;

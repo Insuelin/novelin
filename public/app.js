@@ -108,6 +108,7 @@ const state = {
   summaryUpdatedAt: '',
   summaryBusy: false,
   summaryStop: false,
+  summaryPending: new Map(),
   summaryTimers: new Map(),
   summarySaving: new Set(),
   summaryDirty: new Set(),
@@ -2096,7 +2097,11 @@ function renderAgentSettings() {
 
   const summaries = Array.isArray(book.summaries) ? book.summaries : [];
   const count = summaries.filter((item) => Number.isInteger(item.index)).length;
-  setText($('#ai-summary-count'), `${count} 条`);
+  const pendingSet = state.summaryPending.get(book.meta.id);
+  const pendingCount = pendingSet ? pendingSet.size : 0;
+  const summaryButton = $('#ai-summary-count');
+  setDisabled(summaryButton, !enabled || pendingCount > 0);
+  setText(summaryButton, pendingCount ? '生成中…' : `${count} 条`);
 }
 
 function setMaxTokens(value) {
@@ -2621,14 +2626,10 @@ async function respondProposal(action) {
     );
 
     if (action === 'accept') {
+      const appended = Array.isArray(result.appended) ? result.appended : [];
+      if (appended.length) markSummaryPending(bookId, appended);
       aiLog('OK', '提案已写入', 'ok');
       toast('已写入正文', 'success');
-      if (result.summaryWarning) {
-        aiLog('WARN', result.summaryWarning, 'warn');
-        toast(result.summaryWarning, 'warn');
-      } else if (result.summaryGenerated) {
-        aiLog('OK', `摘要 +${result.summaryGenerated}`, 'ok');
-      }
       const scrollEnd = (proposal.ops || []).some((op) => op.type === 'append_chapter')
         || (Array.isArray(result.changed) && result.changed.includes('manuscript'));
       state.aiReview = null;
@@ -2636,6 +2637,7 @@ async function respondProposal(action) {
       updateReviewBar();
       setAiState('DONE', 'done');
       await refreshBookAfterAi({ scrollEnd });
+      if (appended.length) startAppendedSummaries(bookId, appended);
     } else {
       aiLog('SYS', '提案已拒绝');
       toast('已拒绝提案');
@@ -2647,6 +2649,59 @@ async function respondProposal(action) {
   } catch (err) {
     toast(err.message || '提案处理失败', 'error');
     updateReviewBar();
+  }
+}
+
+function markSummaryPending(bookId, chapters) {
+  const pending = state.summaryPending.get(bookId) || new Set();
+  for (const chapter of chapters) {
+    if (Number.isInteger(chapter?.index)) pending.add(chapter.index);
+  }
+  if (!pending.size) return;
+  state.summaryPending.set(bookId, pending);
+  if (state.current?.meta.id === bookId) renderAgentSettings();
+}
+
+function startAppendedSummaries(bookId, chapters) {
+  Promise.all(chapters.map((chapter) => generateSummaryForChapter(bookId, chapter)))
+    .catch(() => {});
+}
+
+async function generateSummaryForChapter(bookId, chapter) {
+  if (!Number.isInteger(chapter?.index)) return;
+  if (state.current?.meta.id === bookId) {
+    aiLog('SUMMARY', `第 ${chapter.index} 章摘要生成中…`);
+  }
+
+  try {
+    const { summary } = await api(`/books/${encodeURIComponent(bookId)}/summaries/generate`, {
+      method: 'POST',
+      body: { index: chapter.index },
+    });
+
+    if (state.current?.meta.id === bookId) {
+      updateSummaryEntry({
+        index: chapter.index,
+        title: summary.title || chapter.title || '',
+        summary: summary.summary || '',
+        tags: summary.tags || {},
+        source: summary.source || 'ai',
+        at: summary.at || '',
+      });
+      aiLog('OK', `第 ${chapter.index} 章摘要已生成`, 'ok');
+    }
+  } catch (err) {
+    if (state.current?.meta.id === bookId) {
+      aiLog('WARN', `第 ${chapter.index} 章摘要失败：${err.message}`, 'warn');
+      toast(`第 ${chapter.index} 章摘要生成失败：${err.message || '未知错误'}`, 'error', 5000);
+    }
+  } finally {
+    const pending = state.summaryPending.get(bookId);
+    if (pending) {
+      pending.delete(chapter.index);
+      if (!pending.size) state.summaryPending.delete(bookId);
+    }
+    if (state.current?.meta.id === bookId) renderAgentSettings();
   }
 }
 
@@ -3065,6 +3120,11 @@ async function loadSummaries() {
 function openSummaryDialog() {
   const book = state.current;
   if (!book) return;
+  const pending = state.summaryPending.get(book.meta.id);
+  if (pending?.size) {
+    toast('摘要生成中，稍等', 'info');
+    return;
+  }
   const dialog = $('#summary-dialog');
   if (!dialog) return;
 

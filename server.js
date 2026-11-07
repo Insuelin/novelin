@@ -13,51 +13,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = '0.1.0';
 
 /**
- * 提案接受后给新增章节补摘要。摘要失败不影响正文，只回一条 warning。
+ * 接受提案后，取 accepted ops 里 append_chapter 对应的最后 N 章，交给前端后台生成摘要。
  */
-async function generateAppendedSummaries({ store, ai, bookId, ops }) {
-  const appended = (Array.isArray(ops) ? ops : []).filter((op) => op && op.type === 'append_chapter');
-  if (!appended.length) return { generated: 0, warning: null };
+function appendedChapterInfo(book, ops) {
+  const count = (Array.isArray(ops) ? ops : [])
+    .filter((op) => op && op.type === 'append_chapter').length;
+  if (!count || !book) return [];
 
-  const fresh = await store.getBook(bookId);
-  if (!fresh) return { generated: 0, warning: '摘要生成失败：书籍不存在' };
-
-  const chapters = parseChapters(fresh.manuscript, fresh.meta.title).chapters;
-  const targets = chapters.slice(-appended.length);
-
-  let generated = 0;
-  let warning = null;
-
-  for (const chapter of targets) {
-    const existing = fresh.summaries.find((item) => item && item.index === chapter.index);
-    if (existing && existing.source === 'user') continue;
-
-    const body = fresh.manuscript.slice(chapter.bodyStart, chapter.end).replace(/\s+$/, '');
-    let result = null;
-    let failure = null;
-    try {
-      result = await summarizeChapter({ ai, title: chapter.title, body });
-    } catch (err) {
-      failure = err;
-    }
-    if (!result) {
-      warning = `章节已写入，但摘要生成失败：${failure?.message || '模型没有返回摘要'}`;
-      continue;
-    }
-
-    await store.upsertSummary(bookId, {
-      index: chapter.index,
-      title: chapter.title,
-      summary: result.summary,
-      tags: result.tags,
-      source: 'ai',
-      sourceHash: result.sourceHash,
-      at: new Date().toISOString(),
-    });
-    generated += 1;
-  }
-
-  return { generated, warning };
+  const chapters = parseChapters(book.manuscript, book.meta.title).chapters;
+  return chapters.slice(-count).map((chapter) => ({
+    index: chapter.index,
+    title: chapter.title,
+  }));
 }
 
 function publicSummary(entry) {
@@ -402,20 +369,14 @@ export function createApp({ dataDir, aiClient } = {}) {
       const ops = edits ? applyDecisions(proposal.ops, edits) : proposal.ops;
       const result = await applyOps(store, req.params.id, ops);
       const updated = await setProposalStatus(store, req.params.id, proposal.id, 'accepted');
-
-      let summary = { generated: 0, warning: null };
-      try {
-        summary = await generateAppendedSummaries({ store, ai, bookId: req.params.id, ops });
-      } catch (err) {
-        summary = { generated: 0, warning: `章节已写入，但摘要生成失败：${err.message}` };
-      }
+      const fresh = await store.getBook(req.params.id);
+      const appended = appendedChapterInfo(fresh, ops);
 
       return res.json({
         applied: true,
         ...result,
         proposal: updated,
-        summaryGenerated: summary.generated,
-        summaryWarning: summary.warning,
+        appended,
       });
     } catch (err) {
       return next(err);

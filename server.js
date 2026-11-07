@@ -314,7 +314,12 @@ export function createApp({ dataDir, aiClient } = {}) {
 
       let generated = null;
       try {
-        generated = await summarizeChapter({ ai, title: chapter.title, body });
+        generated = await summarizeChapter({
+          ai,
+          title: chapter.title,
+          body,
+          terms: book.meta?.terms || [],
+        });
       } catch (err) {
         return res.status(502).json({ error: err.message || '摘要生成失败' });
       }
@@ -332,6 +337,24 @@ export function createApp({ dataDir, aiClient } = {}) {
 
       await store.upsertSummary(req.params.id, entry);
       return res.json({ summary: entry });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  app.post('/api/books/:id/terms/preview', async (req, res, next) => {
+    try {
+      const result = await store.cleanTerms(req.params.id, { ...(req.body || {}), dryRun: true });
+      return res.json(result);
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  app.post('/api/books/:id/terms/apply', async (req, res, next) => {
+    try {
+      const result = await store.cleanTerms(req.params.id, req.body || {});
+      return res.json(result);
     } catch (err) {
       return next(err);
     }

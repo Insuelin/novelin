@@ -190,6 +190,7 @@
               <button type="button" data-ms-mode="edit">EDIT</button>
             </div>
             <button class="btn ghost small" id="save-manuscript" type="button" hidden>SAVE</button>
+            <button class="btn ghost small" id="terms-btn" type="button">用词 / TERMS</button>
             <span class="hint">Ctrl+S 保存 · 选中正文可准备改写</span>
           </div>
           <div class="review-bar" id="review-bar" hidden>
@@ -388,6 +389,43 @@
         </div>
       </div>
       <div class="summary-list" id="summary-list"></div>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="terms-dialog" class="modal modal-wide">
+  <div class="modal-frame">
+    <div class="modal-head">
+      <div>
+        <div class="eyebrow">/// TERMS / 用词</div>
+        <h2>查找替换</h2>
+      </div>
+      <button class="icon-btn" type="button" data-close-dialog="terms-dialog" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="terms-form">
+        <label class="field-label" for="terms-find">FIND / 查找</label>
+        <input class="input" id="terms-find" type="text" maxlength="200" placeholder="例如：极客">
+        <label class="field-label" for="terms-replace">REPLACE / 替换为</label>
+        <input class="input" id="terms-replace" type="text" maxlength="1000" placeholder="留空表示删除">
+        <div class="terms-scopes" id="terms-scopes">
+          <label class="check"><input type="checkbox" data-term-scope="manuscript" checked><span>正文</span></label>
+          <label class="check"><input type="checkbox" data-term-scope="outline" checked><span>大纲</span></label>
+          <label class="check"><input type="checkbox" data-term-scope="notes" checked><span>笔记</span></label>
+          <label class="check"><input type="checkbox" data-term-scope="theme" checked><span>主题</span></label>
+          <label class="check"><input type="checkbox" data-term-scope="summaries" checked><span>摘要与标签</span></label>
+        </div>
+        <label class="check terms-save"><input type="checkbox" id="terms-save" checked><span>保存为本书用词规则</span></label>
+        <div class="terms-actions">
+          <button class="btn ghost small" type="button" id="terms-preview">预览</button>
+          <button class="btn small" type="button" id="terms-apply">全部替换</button>
+        </div>
+        <div class="terms-result" id="terms-result"></div>
+      </div>
+      <div class="terms-saved-wrap">
+        <div class="terms-saved-head">本书用词规则</div>
+        <div class="terms-saved" id="terms-saved"></div>
+      </div>
     </div>
   </div>
 </dialog>

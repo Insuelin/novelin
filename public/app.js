@@ -102,6 +102,7 @@ const state = {
   modelCatalog: new Map(),
   modelCatalogPromise: null,
   modelCatalogTried: false,
+  termsBookId: '',
   summaryBookId: '',
   summaryChapters: [],
   summaryOrphans: [],
@@ -764,6 +765,11 @@ function renderWorkspace() {
   }
 
   closeChapterMenu();
+  if (state.termsBookId && state.termsBookId !== book.meta.id) {
+    const termsDialog = $('#terms-dialog');
+    if (termsDialog?.open) termsDialog.close();
+    state.termsBookId = '';
+  }
   if (state.summaryBookId && state.summaryBookId !== book.meta.id) {
     const summaryDialog = $('#summary-dialog');
     if (summaryDialog?.open) summaryDialog.close();
@@ -813,6 +819,7 @@ function syncStickyHeight() {
   if (!sticky || !chrome) return;
   const height = Math.max(0, Math.round(sticky.getBoundingClientRect().height));
   chrome.style.setProperty('--ms-sticky-h', `${height}px`);
+  if (state.manuscriptMode === 'edit') syncEditorHeight();
 }
 
 function isNearBottom(element, distance = 180) {
@@ -1440,9 +1447,7 @@ function jumpToChapter(index) {
   const position = Math.max(0, Math.min(editor.value.length, entry?.start || 0));
   editor.focus();
   editor.setSelectionRange(position, position);
-  const line = editor.value.slice(0, position).split('\n').length;
-  const lineHeight = parseFloat(getComputedStyle(editor).lineHeight) || 32;
-  editor.scrollTop = Math.max(0, (line - 3) * lineHeight);
+  scrollEditorToPosition(editor, position);
 }
 
 function updateChapterFromScroll() {
@@ -1548,10 +1553,65 @@ function captureReadAnchor() {
   };
 }
 
+let editorMirror = null;
+
+function getEditorMirror(editor) {
+  if (!editorMirror) {
+    editorMirror = document.createElement('div');
+    editorMirror.setAttribute('aria-hidden', 'true');
+    editorMirror.style.cssText = 'position:absolute;left:-99999px;top:0;visibility:hidden;pointer-events:none;box-sizing:content-box;margin:0;border:0;padding:0;overflow:visible;';
+    document.body.appendChild(editorMirror);
+  }
+
+  const style = getComputedStyle(editor);
+  const paddingLeft = parseFloat(style.paddingLeft) || 0;
+  const paddingRight = parseFloat(style.paddingRight) || 0;
+  editorMirror.style.width = `${Math.max(0, editor.clientWidth - paddingLeft - paddingRight)}px`;
+  editorMirror.style.fontFamily = style.fontFamily;
+  editorMirror.style.fontSize = style.fontSize;
+  editorMirror.style.fontWeight = style.fontWeight;
+  editorMirror.style.fontStyle = style.fontStyle;
+  editorMirror.style.lineHeight = style.lineHeight;
+  editorMirror.style.letterSpacing = style.letterSpacing;
+  editorMirror.style.wordSpacing = style.wordSpacing;
+  editorMirror.style.textTransform = style.textTransform;
+  editorMirror.style.textIndent = style.textIndent;
+  editorMirror.style.whiteSpace = style.whiteSpace;
+  editorMirror.style.overflowWrap = style.overflowWrap;
+  editorMirror.style.wordBreak = style.wordBreak;
+  editorMirror.style.tabSize = style.tabSize;
+  return editorMirror;
+}
+
+function editorLineTop(editor, position) {
+  const mirror = getEditorMirror(editor);
+  const value = editor.value;
+  const at = Math.max(0, Math.min(value.length, position));
+  mirror.textContent = '';
+  mirror.appendChild(document.createTextNode(value.slice(0, at)));
+  const marker = document.createElement('span');
+  marker.textContent = String.fromCharCode(0x200b);
+  mirror.appendChild(marker);
+  mirror.appendChild(document.createTextNode(value.slice(at)));
+  return marker.offsetTop;
+}
+
 function scrollEditorToPosition(editor, position) {
-  const line = editor.value.slice(0, position).split('\n').length;
-  const lineHeight = parseFloat(getComputedStyle(editor).lineHeight) || 32;
-  editor.scrollTop = Math.max(0, (line - 3) * lineHeight);
+  if (!editor) return;
+  const style = getComputedStyle(editor);
+  const paddingTop = parseFloat(style.paddingTop) || 0;
+  const top = editorLineTop(editor, position) + paddingTop;
+  editor.scrollTop = Math.max(0, top);
+}
+
+function syncEditorHeight() {
+  const editor = $('#manuscript-editor');
+  const manuscript = $('.manuscript');
+  if (!editor || !manuscript || state.manuscriptMode !== 'edit') return;
+  const stickyHeight = $('.ms-sticky')?.getBoundingClientRect().height || 0;
+  const height = Math.max(260, Math.round(manuscript.clientHeight - stickyHeight - 1));
+  editor.style.height = `${height}px`;
+  editor.style.minHeight = `${height}px`;
 }
 
 function applyReadAnchorToEditor(anchor) {
@@ -1575,20 +1635,14 @@ function captureEditAnchor() {
   const value = editor.value;
   let position = Math.max(0, Math.min(value.length, editor.selectionStart || 0));
 
-  const lineHeight = parseFloat(getComputedStyle(editor).lineHeight) || 32;
-  const topLine = Math.floor(editor.scrollTop / lineHeight);
-  const caretLine = value.slice(0, position).split('\n').length - 1;
-  const visibleLines = Math.max(1, Math.floor(editor.clientHeight / lineHeight));
-  if (caretLine < topLine || caretLine > topLine + visibleLines - 1) {
-    let nextPosition = 0;
-    let line = 0;
-    while (line < topLine && nextPosition < value.length) {
-      const newline = value.indexOf('\n', nextPosition);
-      if (newline < 0) break;
-      nextPosition = newline + 1;
-      line += 1;
-    }
-    position = nextPosition;
+  const style = getComputedStyle(editor);
+  const lineHeight = parseFloat(style.lineHeight) || 32;
+  const paddingTop = parseFloat(style.paddingTop) || 0;
+  const caretTop = editorLineTop(editor, position) + paddingTop;
+  if (caretTop < editor.scrollTop || caretTop + lineHeight > editor.scrollTop + editor.clientHeight) {
+    const maxScroll = Math.max(1, editor.scrollHeight - editor.clientHeight);
+    const ratio = Math.min(1, Math.max(0, editor.scrollTop / maxScroll));
+    position = Math.round(ratio * value.length);
   }
 
   let chapterIndex = 0;
@@ -1707,6 +1761,7 @@ function setManuscriptMode(mode, { preservePosition = false } = {}) {
     const manuscript = $('.manuscript');
     if (manuscript) manuscript.scrollTop = 0;
     requestAnimationFrame(() => {
+      syncEditorHeight();
       if (anchor) applyReadAnchorToEditor(anchor);
       else updateChapterFromCursor();
     });
@@ -2995,16 +3050,100 @@ function updateSummaryHint(text) {
   if (hint) hint.textContent = text;
 }
 
-function summaryTagHtml(tags) {
+function normalizeSummaryTags(tags) {
+  const out = {};
+  for (const key of Object.keys(SUMMARY_TAG_LABELS)) {
+    const list = Array.isArray(tags?.[key]) ? tags[key] : [];
+    out[key] = [...new Set(list.map((item) => String(item).trim()).filter(Boolean))];
+  }
+  return out;
+}
+
+function summaryTagHtml(tags, chapterIndex, disabled = false) {
   const chips = [];
   for (const [key, label] of Object.entries(SUMMARY_TAG_LABELS)) {
     const list = Array.isArray(tags?.[key]) ? tags[key] : [];
-    for (const item of list) {
-      if (!item) continue;
-      chips.push(`<span class="summary-tag"><b>${escapeHtml(label)}</b>${escapeHtml(item)}</span>`);
-    }
+    list.forEach((item, index) => {
+      if (!item) return;
+      if (disabled) {
+        chips.push(`<span class="summary-tag is-static"><b>${escapeHtml(label)}</b>${escapeHtml(item)}</span>`);
+        return;
+      }
+      chips.push(`<span class="summary-tag" data-tag-key="${key}" data-tag-index="${index}" data-tag-chapter="${chapterIndex}"><b>${escapeHtml(label)}</b><span class="summary-tag-text" role="button" tabindex="0" title="点击修改">${escapeHtml(item)}</span><button class="summary-tag-del" type="button" title="删除" aria-label="删除标签">×</button></span>`);
+    });
   }
   return chips.length ? `<div class="summary-tags">${chips.join('')}</div>` : '';
+}
+
+function summaryTagChapter(element) {
+  const index = Number(element?.closest('.summary-tag')?.dataset.tagChapter);
+  if (!Number.isInteger(index)) return null;
+  return state.summaryChapters.find((chapter) => chapter.index === index) || null;
+}
+
+function startSummaryTagEdit(span) {
+  if (!span || state.summaryBusy || span.isContentEditable) return;
+  span.dataset.original = span.textContent;
+  span.setAttribute('contenteditable', 'plaintext-only');
+  span.classList.add('is-editing');
+  span.focus();
+  const range = document.createRange();
+  range.selectNodeContents(span);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function commitSummaryTagEdit(span, { cancel = false } = {}) {
+  if (!span?.isContentEditable) return;
+  const original = span.dataset.original || '';
+  const chapter = summaryTagChapter(span);
+  const chip = span.closest('.summary-tag');
+  const key = chip?.dataset.tagKey;
+  const tagIndex = Number(chip?.dataset.tagIndex);
+
+  span.removeAttribute('contenteditable');
+  span.classList.remove('is-editing');
+  delete span.dataset.original;
+
+  if (cancel) {
+    span.textContent = original;
+    return;
+  }
+
+  const value = span.textContent.replace(/\s+/g, ' ').trim();
+  span.textContent = value || original;
+  if (!chapter || !key || !Number.isInteger(tagIndex) || value === original) return;
+
+  const list = Array.isArray(chapter.tags?.[key]) ? [...chapter.tags[key]] : [];
+  if (!value) list.splice(tagIndex, 1);
+  else list[tagIndex] = value;
+  const before = Array.isArray(chapter.tags?.[key]) ? chapter.tags[key].length : 0;
+  chapter.tags = { ...chapter.tags, [key]: [...new Set(list.map((item) => String(item).trim()).filter(Boolean))] };
+  const after = chapter.tags[key].length;
+
+  scheduleSummarySave(chapter.index);
+  span.textContent = value;
+  if (!value || after !== before) {
+    const listEl = $('#summary-list');
+    const scrollTop = listEl?.scrollTop || 0;
+    renderSummaryList();
+    if (listEl) listEl.scrollTop = scrollTop;
+  }
+}
+
+function deleteSummaryTag(chapter, key, tagIndex) {
+  if (!chapter || state.summaryBusy) return;
+  const list = Array.isArray(chapter.tags?.[key]) ? [...chapter.tags[key]] : [];
+  if (!Number.isInteger(tagIndex) || tagIndex < 0 || tagIndex >= list.length) return;
+  list.splice(tagIndex, 1);
+  chapter.tags = { ...chapter.tags, [key]: list };
+  scheduleSummarySave(chapter.index);
+
+  const listEl = $('#summary-list');
+  const scrollTop = listEl?.scrollTop || 0;
+  renderSummaryList();
+  if (listEl) listEl.scrollTop = scrollTop;
 }
 
 function updateSummaryEntry(chapter) {
@@ -3058,7 +3197,7 @@ function renderSummaryList() {
         <span class="summary-badges">${badges.join('')}<span>${formatNumber(chapter.chars)} 字</span></span>
       </div>
       <textarea class="textarea summary-text" rows="3" data-summary-index="${chapter.index}" ${disabled ? 'disabled' : ''} placeholder="${empty ? '这一章还没有正文' : '还没有摘要'}">${escapeHtml(chapter.summary || '')}</textarea>
-      ${summaryTagHtml(chapter.tags)}
+      ${summaryTagHtml(chapter.tags, chapter.index, disabled)}
       <div class="summary-item-actions">
         <button class="text-btn" type="button" data-summary-regenerate="${chapter.index}" ${disabled ? 'disabled' : ''}>重新生成</button>
       </div>
@@ -3137,6 +3276,165 @@ function openSummaryDialog() {
   loadSummaries();
 }
 
+const TERM_SCOPE_LABELS = {
+  manuscript: '正文',
+  outline: '大纲',
+  notes: '笔记',
+  theme: '主题',
+  summary: '摘要',
+  summaryTitle: '摘要标题',
+  tags: '标签',
+};
+
+function selectedTermScopes() {
+  return $$('#terms-scopes [data-term-scope]')
+    .filter((input) => input.checked)
+    .map((input) => input.dataset.termScope);
+}
+
+function renderSavedTerms() {
+  const box = $('#terms-saved');
+  if (!box) return;
+  const terms = Array.isArray(state.current?.meta?.terms) ? state.current.meta.terms : [];
+  if (!terms.length) {
+    box.innerHTML = '<span class="terms-saved-empty">还没有规则</span>';
+    return;
+  }
+  box.innerHTML = terms.map((term, index) => `<span class="terms-saved-item"><b>${escapeHtml(term.from)}</b> → ${term.to ? escapeHtml(term.to) : '删除'}<button type="button" data-term-remove="${index}" title="删除规则" aria-label="删除规则">×</button></span>`).join('');
+}
+
+function openTermsDialog() {
+  const book = state.current;
+  const dialog = $('#terms-dialog');
+  if (!book || !dialog) return;
+  if (state.aiRunning || state.aiProposal?.status === 'pending') {
+    toast('等 AI 处理完再用词替换', 'error');
+    return;
+  }
+  if (state.summaryBusy) {
+    toast('摘要任务还没结束，等它完成再用词替换', 'error');
+    return;
+  }
+
+  state.termsBookId = book.meta.id;
+  const find = $('#terms-find');
+  const replace = $('#terms-replace');
+  const result = $('#terms-result');
+  if (find) find.value = '';
+  if (replace) replace.value = '';
+  if (result) result.innerHTML = '';
+  $$('#terms-scopes [data-term-scope]').forEach((input) => { input.checked = true; });
+  const save = $('#terms-save');
+  if (save) save.checked = true;
+  renderSavedTerms();
+  if (!dialog.open) dialog.showModal();
+  find?.focus();
+}
+
+function renderTermResult(result) {
+  const box = $('#terms-result');
+  if (!box) return;
+  if (!result?.total) {
+    box.innerHTML = '<div class="term-empty">没有命中。</div>';
+    return;
+  }
+
+  const lines = [`<div class="term-total">共 ${formatNumber(result.total)} 处</div>`];
+  for (const [key, count] of Object.entries(result.counts || {})) {
+    lines.push(`<div><span class="term-scope">${escapeHtml(TERM_SCOPE_LABELS[key] || key)}</span> ${formatNumber(count)} 处</div>`);
+    for (const sample of result.samples?.[key] || []) {
+      lines.push(`<div class="term-sample">${escapeHtml(sample)}</div>`);
+    }
+  }
+  box.innerHTML = lines.join('');
+}
+
+async function previewTermClean() {
+  const book = state.current;
+  if (!book) return null;
+
+  const find = String($('#terms-find')?.value || '').trim();
+  const replace = String($('#terms-replace')?.value || '');
+  const scopes = selectedTermScopes();
+  if (!find) {
+    toast('先填要查找的词', 'error');
+    return null;
+  }
+  if (!scopes.length) {
+    toast('至少选一个范围', 'error');
+    return null;
+  }
+
+  const result = await api(`/books/${encodeURIComponent(book.meta.id)}/terms/preview`, {
+    method: 'POST',
+    body: { find, replace, scopes },
+  });
+  renderTermResult(result);
+  return result;
+}
+
+async function applyTermClean() {
+  const book = state.current;
+  if (!book) return;
+  if (state.aiRunning || state.aiProposal?.status === 'pending' || state.summaryBusy) {
+    toast('还有任务在跑，等它结束再替换', 'error');
+    return;
+  }
+
+  let preview;
+  try {
+    preview = await previewTermClean();
+  } catch (err) {
+    toast(err.message || '预览失败', 'error');
+    return;
+  }
+  if (!preview) return;
+
+  const saveTerm = Boolean($('#terms-save')?.checked);
+  if (!preview.total && !saveTerm) {
+    toast('没有命中', 'info');
+    return;
+  }
+  if (preview.total > 100 && !window.confirm(`会改动 ${preview.total} 处，确定继续？`)) return;
+
+  try {
+    const result = await api(`/books/${encodeURIComponent(book.meta.id)}/terms/apply`, {
+      method: 'POST',
+      body: {
+        find: preview.find,
+        replace: preview.replace,
+        scopes: preview.scopes,
+        saveTerm,
+      },
+    });
+    renderTermResult(result);
+    toast(result.total ? `已替换 ${result.total} 处` : '已保存用词规则', 'success');
+    await refreshBookAfterAi({ scrollEnd: false });
+    renderSavedTerms();
+  } catch (err) {
+    toast(err.message || '替换失败', 'error');
+  }
+}
+
+async function removeSavedTerm(index) {
+  const book = state.current;
+  if (!book) return;
+  const terms = (Array.isArray(book.meta.terms) ? book.meta.terms : [])
+    .filter((_, at) => at !== index);
+
+  try {
+    const { meta } = await api(`/books/${encodeURIComponent(book.meta.id)}/meta`, {
+      method: 'PUT',
+      body: { terms },
+    });
+    if (state.current?.meta.id === book.meta.id) state.current.meta = meta;
+    renderSavedTerms();
+    toast('已删除用词规则', 'success');
+  } catch (err) {
+    toast(err.message || '删除规则失败', 'error');
+  }
+}
+
 function scheduleSummarySave(index) {
   clearTimeout(state.summaryTimers.get(index));
   state.summaryTimers.set(index, setTimeout(() => {
@@ -3166,7 +3464,7 @@ async function saveSummary(index) {
   try {
     const { summary } = await api(`/books/${encodeURIComponent(bookId)}/summaries/${index}`, {
       method: 'PUT',
-      body: { summary: value },
+      body: { summary: value, tags: normalizeSummaryTags(chapter.tags) },
     });
     if (state.summaryBookId !== bookId) return;
 
@@ -3177,6 +3475,13 @@ async function saveSummary(index) {
     latest.at = summary.at || latest.at;
     latest.hasSummary = true;
     updateSummaryEntry(latest);
+
+    const item = document.querySelector(`#summary-list [data-summary-item="${index}"]`);
+    const sourceBadge = item?.querySelector('.summary-badge:not(.missing):not(.stale)');
+    if (sourceBadge) {
+      sourceBadge.textContent = '用户';
+      sourceBadge.classList.add('user');
+    }
 
     if (String(latest.summary || '').trim() !== value) {
       state.summaryDirty.add(index);
@@ -3570,6 +3875,7 @@ function wireEvents() {
   window.addEventListener('resize', () => {
     requestAnimationFrame(() => {
       syncStickyHeight();
+      syncEditorHeight();
       updateChapterFromScroll();
     });
   });
@@ -3629,7 +3935,54 @@ function wireEvents() {
     scheduleSummarySave(index);
   });
 
+  $('#summary-list')?.addEventListener('mousedown', (event) => {
+    if (event.target.closest('.summary-tag-del')) event.preventDefault();
+  });
+
+  $('#summary-list')?.addEventListener('keydown', (event) => {
+    const span = event.target.closest('.summary-tag-text');
+    if (!span) return;
+    if (!span.isContentEditable) {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        startSummaryTagEdit(span);
+      }
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      span.blur();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      span.dataset.cancel = '1';
+      span.blur();
+    }
+  });
+
+  $('#summary-list')?.addEventListener('focusout', (event) => {
+    const span = event.target.closest?.('.summary-tag-text');
+    if (!span?.isContentEditable) return;
+    const cancel = span.dataset.cancel === '1';
+    delete span.dataset.cancel;
+    commitSummaryTagEdit(span, { cancel });
+  });
+
   $('#summary-list')?.addEventListener('click', (event) => {
+    const del = event.target.closest('.summary-tag-del');
+    if (del) {
+      const chip = del.closest('.summary-tag');
+      const chapter = summaryTagChapter(del);
+      deleteSummaryTag(chapter, chip?.dataset.tagKey, Number(chip?.dataset.tagIndex));
+      return;
+    }
+
+    const tagText = event.target.closest('.summary-tag-text');
+    if (tagText) {
+      event.preventDefault();
+      startSummaryTagEdit(tagText);
+      return;
+    }
+
     const button = event.target.closest('[data-summary-regenerate]');
     if (!button) return;
     regenerateSummary(Number(button.dataset.summaryRegenerate));
@@ -3643,6 +3996,20 @@ function wireEvents() {
   $('#summary-dialog')?.addEventListener('close', () => {
     if (state.summaryBusy) state.summaryStop = true;
     flushSummaryTimers().catch(() => {});
+  });
+
+  $('#terms-btn')?.addEventListener('click', openTermsDialog);
+  $('#terms-preview')?.addEventListener('click', () => {
+    previewTermClean().catch((err) => toast(err.message || '预览失败', 'error'));
+  });
+  $('#terms-apply')?.addEventListener('click', applyTermClean);
+  $('#terms-saved')?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-term-remove]');
+    if (!button) return;
+    removeSavedTerm(Number(button.dataset.termRemove));
+  });
+  $('#terms-dialog')?.addEventListener('close', () => {
+    state.termsBookId = '';
   });
   $('#save-manuscript').addEventListener('click', () => saveAll({ notify: true }));
 

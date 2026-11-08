@@ -27,11 +27,8 @@ export function renderLog(forceBottom = false) {
   if (!log) return;
 
   const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
-  const matches = (entry) => {
-    if (state.logLevel === 'warn') return entry.level === 'warn' || entry.level === 'error';
-    if (state.logLevel === 'error') return entry.level === 'error';
-    return entry.level === 'info';
-  };
+  const rank = { info: 0, warn: 1, error: 2 };
+  const matches = (entry) => rank[entry.level] >= (rank[state.logLevel] ?? 0);
 
   const entries = state.aiLogs.filter(matches);
   log.innerHTML = entries.length

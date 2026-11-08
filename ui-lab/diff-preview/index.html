@@ -1,0 +1,614 @@
+<title>Diff 概览条</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Serif+SC:wght@400;600&display=swap">
+<style>
+  :root{
+    --bg:#09090a;
+    --stage:#0d0e10;
+    --reader:#101113;
+    --line:rgba(255,255,255,.08);
+    --line-strong:rgba(255,255,255,.15);
+    --text:#e7e3da;
+    --muted:#8c8d92;
+    --dim:#5d5f65;
+    --mark:#e0b04a;
+    --mark-soft:rgba(224,176,74,.12);
+    --serif:"Noto Serif SC","Songti SC","SimSun",Georgia,serif;
+    --mono:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;
+    --sans:"Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  html{background:var(--bg)}
+  body{
+    margin:0;background:var(--bg);color:var(--text);
+    font-family:var(--sans);
+    padding-left:max(16px, env(safe-area-inset-left, 0px));
+    padding-right:max(16px, env(safe-area-inset-right, 0px));
+    padding-block:34px 56px;
+  }
+  button{font:inherit;color:inherit}
+  .wrap{width:min(1080px,100%);margin:0 auto}
+  .mast{
+    display:flex;align-items:flex-end;justify-content:space-between;gap:24px;
+    padding-bottom:20px;border-bottom:1px solid var(--line);margin-bottom:22px;
+  }
+  .eyebrow{font-family:var(--mono);font-size:9px;letter-spacing:.18em;color:var(--mark);text-transform:uppercase}
+  h1{margin:10px 0 0;font-family:var(--serif);font-size:clamp(26px,3.6vw,36px);font-weight:600;letter-spacing:-.015em}
+  .sub{margin:8px 0 0;max-width:58ch;color:var(--muted);font-size:12px;line-height:1.8}
+  .mast-meta{font-family:var(--mono);font-size:8.5px;letter-spacing:.12em;color:var(--dim);text-align:right;line-height:2}
+  .mast-meta b{color:var(--muted);font-weight:400}
+
+  .stage{border:1px solid var(--line);background:var(--stage)}
+  .stage-bar{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:9px 14px;border-bottom:1px solid var(--line);
+    font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;color:var(--dim);
+  }
+  .stage-bar b{color:var(--mark);font-weight:400}
+  .reader-wrap{position:relative;height:560px;background:var(--reader);overflow:hidden}
+  .reader{
+    height:100%;overflow-y:scroll;overflow-x:hidden;
+    scrollbar-width:none;-ms-overflow-style:none;scrollbar-gutter:stable;
+    outline:none;
+  }
+  .reader:focus-visible{box-shadow:inset 0 0 0 1px rgba(224,176,74,.35)}
+  .reader::-webkit-scrollbar{width:0;height:0;display:none}
+  .reader-inner{position:relative;padding:34px 48px 58px 46px;min-height:100%}
+  .book-title{font-family:var(--mono);font-size:8.5px;letter-spacing:.22em;color:var(--dim);text-transform:uppercase;margin-bottom:22px}
+  .chapter-no{font-family:var(--mono);font-size:8.5px;letter-spacing:.16em;color:var(--mark);margin-bottom:6px}
+  h2.chapter{margin:0 0 24px;font-family:var(--serif);font-size:21px;font-weight:600;color:#efebe2}
+  .prose p{margin:0 0 1.15em;font-family:var(--serif);font-size:16.5px;line-height:2.04;color:#d8d4cc;letter-spacing:.01em}
+  .prose p:last-child{margin-bottom:0}
+  .del{color:#ffb6ad;text-decoration:line-through;text-decoration-color:rgba(255,85,68,.6);background:rgba(255,85,68,.14);padding:.05em .08em}
+  .ins{color:#d7f7e1;text-decoration:none;background:rgba(99,214,138,.12);border-bottom:1px solid rgba(99,214,138,.45);padding:.05em .08em}
+  .pending{color:#fff;background:rgba(224,176,74,.09);border-top:1px solid rgba(224,176,74,.38);border-bottom:1px solid rgba(224,176,74,.62);padding:.1em .1em .08em}
+  .flash{animation:flashTarget 1.1s ease-out}
+  @keyframes flashTarget{0%{background-color:rgba(224,176,74,.16)}100%{background-color:transparent}}
+
+  .ruler{
+    --ruler-w:12px;position:absolute;top:0;bottom:0;right:0;width:var(--ruler-w);
+    z-index:2;background:transparent;
+  }
+  .marks{position:absolute;inset:0;pointer-events:none}
+  .marker{
+    position:absolute;left:0;width:100%;min-height:3px;padding:0;border:0;
+    border-radius:0;background:transparent;cursor:pointer;pointer-events:auto;
+    z-index:1;transition:filter .15s ease;
+  }
+  .marker:hover{filter:brightness(1.18)}
+  .marker:focus-visible{outline:2px solid var(--mark);outline-offset:1px}
+  .marker[data-colors="red"]{background:rgba(255,85,68,.58)}
+  .marker[data-colors="green"]{background:rgba(99,214,138,.52)}
+  .marker[data-colors="blue"]{background:rgba(54, 155, 244, 0.55)}
+  .marker.pending{background:transparent;border:1px solid rgba(240,196,25,.6);border-radius:0}
+  .thumb{
+    position:absolute;left:0;right:0;top:0;width:100%;min-height:24px;
+    background:rgba(255,255,255,.1);border-radius:0;cursor:grab;z-index:2;
+    opacity:0;transition:opacity .25s ease,background .15s ease;
+    touch-action:none;user-select:none;
+  }
+  .reader-wrap:hover .thumb,.reader-wrap.show-thumb .thumb,.reader-wrap.always .thumb{opacity:1}
+  .thumb:hover{background:rgba(255,255,255,.18)}
+  .thumb:active{background:rgba(255,255,255,.24)}
+  .thumb:focus-visible{outline:2px solid var(--mark);outline-offset:1px;opacity:1}
+  .thumb.dragging{transition:none;opacity:1;cursor:grabbing}
+  .reader-wrap.hide-pending .pending{background:transparent;border-color:transparent;color:inherit}
+  .stage-foot{
+    display:flex;align-items:center;justify-content:space-between;gap:14px;
+    padding:8px 14px;border-top:1px solid var(--line);
+    font-family:var(--mono);font-size:8px;letter-spacing:.1em;color:var(--dim);
+  }
+  .stage-foot b{color:var(--muted);font-weight:400}
+
+  .controls{
+    display:flex;flex-wrap:wrap;align-items:center;gap:16px 24px;
+    padding:16px 2px 18px;border-bottom:1px solid var(--line);
+  }
+  .control{display:flex;align-items:center;gap:9px}
+  .control-label{font-family:var(--mono);font-size:8px;letter-spacing:.13em;color:var(--dim);white-space:nowrap}
+  .seg{display:flex;gap:4px}
+  .seg button{
+    padding:5px 8px;border:1px solid var(--line);background:transparent;
+    font-family:var(--mono);font-size:9px;letter-spacing:.04em;color:var(--muted);
+    cursor:pointer;transition:border-color .15s ease,color .15s ease,background .15s ease;
+  }
+  .seg button:hover{border-color:var(--line-strong);color:var(--text)}
+  .seg button[aria-pressed="true"]{border-color:rgba(224,176,74,.55);color:var(--mark);background:var(--mark-soft)}
+  .seg button:focus-visible{outline:2px solid var(--mark);outline-offset:2px}
+  .pick{
+    display:flex;align-items:baseline;justify-content:space-between;gap:20px;
+    padding:14px 2px 0;font-size:11px;color:var(--muted);
+  }
+  .pick b{font-family:var(--mono);font-size:8px;letter-spacing:.12em;color:var(--dim);font-weight:400;margin-right:10px}
+  .copy{
+    flex:0 0 auto;padding:0;border:0;background:transparent;color:var(--mark);
+    font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;cursor:pointer;
+  }
+  .copy:hover{text-decoration:underline}
+  .copy:focus-visible{outline:2px solid var(--mark);outline-offset:3px}
+  .copy-status{font-family:var(--mono);font-size:8px;color:var(--dim);margin-left:8px}
+  .note{margin:16px 0 0;color:var(--dim);font-size:10.5px;line-height:1.8}
+  .note b{color:var(--muted);font-weight:400}
+  @media (max-width:760px){
+    body{padding-block:24px 40px}
+    .mast{align-items:flex-start}
+    .mast-meta{display:none}
+    .reader-wrap{height:470px}
+    .reader-inner{padding:28px 34px 44px 26px}
+    .prose p{font-size:15.5px;line-height:1.94}
+    h2.chapter{font-size:19px}
+    .controls{gap:12px 18px}
+    .pick{display:block}
+    .pick .copy-wrap{display:block;margin-top:8px}
+  }
+  @media (max-width:420px){
+    .control{width:100%;justify-content:space-between}
+    .seg{flex:0 0 auto}
+    .stage-foot span:last-child{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<main class="wrap">
+  <header class="mast">
+    <div>
+      <div class="eyebrow">NOVELIN / DIFF RULER</div>
+      <h1>Diff 概览条</h1>
+      <p class="sub">窄条固定在滚动条旁，按全文行数标出修改位置。滚动时颜色块不动，半透明滑块表示当前视口。</p>
+    </div>
+    <div class="mast-meta">
+      <div>BUILD <b>LOCAL</b></div>
+      <div>STATE <b id="topState">REVIEW</b></div>
+    </div>
+  </header>
+
+  <section class="stage" aria-label="阅读区预览">
+    <div class="stage-bar">
+      <span>PREVIEW / 阅读区</span>
+      <span><b id="stageState">REVIEW · 3 处修改 · 1 pending</b></span>
+    </div>
+    <div class="reader-wrap">
+      <div class="reader" id="reader" tabindex="0">
+        <div class="reader-inner" id="readerInner">
+          <div class="book-title">雾港来信 / WUGANG LETTERS</div>
+          <div class="chapter-no">CHAPTER 03</div>
+          <h2 class="chapter">潮汐线以下</h2>
+          <div class="prose">
+            <p id="p1">值班室的灯管闪了两下。海雾从窗缝里挤进来，带着铁锈和柴油的味道。</p>
+            <p id="p2">他把搪瓷杯放回桌上，杯底和桌面碰出一声轻响。楼下的潮声一阵一阵，像有人在很远的地方翻动湿透的纸。</p>
+            <p id="p3">他在值班日志上写下：<del class="del">十一点二十分，白鹭号进港。</del><ins class="ins">十一点二十分，白鹭号没有进港。</ins>写完又觉得不对，把“没有”两个字圈了起来。</p>
+            <p id="p4">窗外那盏航标灯亮着，光柱扫过海面，又慢慢转回去。雾太厚，光只能在近处散开。</p>
+            <p id="p5">他翻到前一天的记录。<ins class="ins">同样的时间，同样写着“白鹭号没有进港”。</ins>笔迹是他的，墨色却比今天的浅。</p>
+            <p id="p6">他忽然想起，<span class="pending">白鹭号已经三年没有走过这条航线了。</span>值班室墙上的船期表还钉在原地，纸边卷起来，最后一栏停在旧年份。</p>
+            <p id="p7">走廊尽头传来拖鞋的声音。老周推门进来，手里提着一只塑料桶，桶里装着刚捞上来的小银鱼。</p>
+            <p id="p8">“还没睡？”老周问。他把桶放在门口，水沿着桶壁往下淌，<del class="del">在水泥地上积成一小片。</del>在水泥地上积成一小片，又慢慢渗进裂缝里。</p>
+            <p id="p9">“等雾散。”他说。老周嗯了一声，走到窗边看了一眼航标灯，没再说话。</p>
+            <p id="p10">两个人隔着值班室站着，谁也没有开灯。潮声填满了屋子，像一张铺开的旧网。</p>
+            <p id="p11">过了很久，老周才说：“白鹭号昨天就回来了。你没听见汽笛？”</p>
+            <p id="p12">他低头看日志。纸上那行字还在，墨迹新鲜，像刚刚写上去。窗外的航标灯又转了一圈。</p>
+            <div id="filler" hidden></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ruler" id="ruler" aria-label="滚动与修改轨道">
+        <div class="marks" id="marks"></div>
+        <div class="thumb" id="scrollThumb" role="slider" aria-label="滚动位置" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0"></div>
+      </div>
+    </div>
+    <div class="stage-foot">
+      <span>原滚动条位置 · 拖滑块滚动</span>
+      <span><b>点击</b> 标记跳转 · <b>点击</b> 轨道定位</span>
+    </div>
+  </section>
+
+  <div class="controls" aria-label="预览选项">
+    <div class="control">
+      <span class="control-label">宽度</span>
+      <div class="seg" id="widthChoices">
+        <button type="button" data-width="10" aria-pressed="false">10</button>
+        <button type="button" data-width="12" aria-pressed="true">12</button>
+        <button type="button" data-width="14" aria-pressed="false">14</button>
+      </div>
+    </div>
+    <div class="control">
+      <span class="control-label">文档</span>
+      <div class="seg" id="lengthChoices">
+        <button type="button" data-length="short" aria-pressed="true">短</button>
+        <button type="button" data-length="long" aria-pressed="false">长</button>
+      </div>
+    </div>
+    <div class="control">
+      <span class="control-label">显示</span>
+      <div class="seg" id="timingChoices">
+        <button type="button" data-timing="review" aria-pressed="true">仅审查</button>
+        <button type="button" data-timing="always" aria-pressed="false">常驻</button>
+      </div>
+    </div>
+    <div class="control">
+      <span class="control-label">pending</span>
+      <div class="seg" id="pendingChoices">
+        <button type="button" data-pending="off" aria-pressed="true">不显示</button>
+        <button type="button" data-pending="on" aria-pressed="false">金色</button>
+      </div>
+    </div>
+    <div class="control">
+      <span class="control-label">点击</span>
+      <div class="seg" id="jumpChoices">
+        <button type="button" data-jump="on" aria-pressed="true">跳转</button>
+        <button type="button" data-jump="off" aria-pressed="false">只提示</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="pick">
+    <div><b>当前选择</b><span id="pickText">12px · 仅审查 · 不显示 pending · 点击跳转</span></div>
+    <div class="copy-wrap"><button class="copy" type="button" id="copyPick">复制</button><span class="copy-status" id="copyStatus"></span></div>
+  </div>
+
+  <p class="note"><b>说明：</b>红是删除，绿是新增，蓝是同一行既删又改，金色是正在改。窄条贴着右边缘，颜色块和滑块同宽；滑块半透明，平时淡出。切到“长”能看到相邻改动合并、多行改动，以及一行只画 3px 的情况。</p>
+</main>
+
+<script>
+  const state = { width: 12, timing: 'review', pending: false, jump: true, long: false };
+  const ruler = document.getElementById('ruler');
+  const reader = document.getElementById('reader');
+  const pickText = document.getElementById('pickText');
+  const copyStatus = document.getElementById('copyStatus');
+  const stageState = document.getElementById('stageState');
+  const readerWrap = document.querySelector('.reader-wrap');
+  let thumbTimer = 0;
+
+  function showThumb() {
+    readerWrap.classList.add('show-thumb');
+    clearTimeout(thumbTimer);
+    thumbTimer = setTimeout(() => readerWrap.classList.remove('show-thumb'), 900);
+  }
+
+  function buildFiller() {
+    const filler = document.getElementById('filler');
+    if (filler.childElementCount) return;
+    const fragment = document.createDocumentFragment();
+    for (let index = 1; index <= 160; index += 1) {
+      const paragraph = document.createElement('p');
+      paragraph.id = `f${index}`;
+      if (index === 20) {
+        paragraph.innerHTML = '值班记录翻到第 20 页，<del class="del">这一页被海水泡过。</del>';
+      } else if (index === 21) {
+        paragraph.innerHTML = '他往后翻，<ins class="ins">下一页是空白的。</ins>';
+      } else if (index === 45) {
+        paragraph.innerHTML = `<del class="del">${'雾从海面上升起来，灯塔的光在远处慢慢转了一圈。'.repeat(6)}</del>`;
+      } else if (index === 159) {
+        paragraph.innerHTML = '最后一页只有一行，<ins class="ins">字迹很新。</ins>';
+      } else {
+        paragraph.textContent = `夜色压低了海面，值班室的钟走到第 ${index} 格。`;
+      }
+      fragment.appendChild(paragraph);
+    }
+    filler.appendChild(fragment);
+  }
+
+  function apply() {
+    ruler.style.setProperty('--ruler-w', `${state.width}px`);
+    readerWrap.classList.toggle('always', state.timing === 'always');
+    readerWrap.classList.toggle('hide-pending', !state.pending);
+
+    document.querySelectorAll('#widthChoices button').forEach((button) => {
+      button.setAttribute('aria-pressed', String(Number(button.dataset.width) === state.width));
+    });
+    document.querySelectorAll('#lengthChoices button').forEach((button) => {
+      button.setAttribute('aria-pressed', String((button.dataset.length === 'long') === state.long));
+    });
+    document.querySelectorAll('#timingChoices button').forEach((button) => {
+      button.setAttribute('aria-pressed', String(button.dataset.timing === state.timing));
+    });
+    document.querySelectorAll('#pendingChoices button').forEach((button) => {
+      button.setAttribute('aria-pressed', String((button.dataset.pending === 'on') === state.pending));
+    });
+    document.querySelectorAll('#jumpChoices button').forEach((button) => {
+      button.setAttribute('aria-pressed', String((button.dataset.jump === 'on') === state.jump));
+    });
+
+    pickText.textContent = [
+      `${state.width}px`,
+      state.long ? '长文' : '短文',
+      state.timing === 'always' ? '常驻' : '仅审查',
+      state.pending ? 'pending 金色' : '不显示 pending',
+      state.jump ? '点击跳转' : '只提示',
+    ].join(' · ');
+    stageState.textContent = state.long
+      ? 'REVIEW · 长文示例 · 含相邻合并 / 多行 / 3px'
+      : `REVIEW · 3 处修改${state.pending ? ' · 1 pending' : ''}`;
+    document.getElementById('topState').textContent = state.timing === 'always' ? 'ALWAYS' : 'REVIEW';
+    buildMarkers();
+    layoutThumb();
+  }
+
+  function lineTolerance() {
+    const paragraph = document.querySelector('.prose p');
+    const value = parseFloat(paragraph ? getComputedStyle(paragraph).lineHeight : '');
+    return Math.max(6, (Number.isFinite(value) ? value : 24) * 0.45);
+  }
+
+  function clusterTops(values) {
+    const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+    const tolerance = lineTolerance();
+    const clusters = [];
+    for (const value of sorted) {
+      const last = clusters[clusters.length - 1];
+      if (!last || value - last > tolerance) clusters.push(value);
+    }
+    return clusters;
+  }
+
+  function collectLineTops() {
+    const values = [];
+    document.querySelectorAll('.prose p').forEach((paragraph) => {
+      const range = document.createRange();
+      range.selectNodeContents(paragraph);
+      [...range.getClientRects()].forEach((rect) => {
+        if (rect.width > 0 && rect.height > 0) values.push(rect.top);
+      });
+    });
+    return clusterTops(values).map((top) => Math.round(top));
+  }
+
+  function lineSpanFor(element, tops) {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const values = [...range.getClientRects()]
+      .filter((rect) => rect.width > 0 && rect.height > 0)
+      .map((rect) => rect.top);
+    const indices = clusterTops(values).map((top) => {
+      let best = 0;
+      let distance = Infinity;
+      tops.forEach((lineTop, index) => {
+        const next = Math.abs(lineTop - top);
+        if (next < distance) {
+          distance = next;
+          best = index;
+        }
+      });
+      return best;
+    });
+    if (!indices.length) return null;
+    return { start: Math.min(...indices), end: Math.max(...indices) };
+  }
+
+  function paragraphLabel(paragraph) {
+    if (!paragraph) return '正文';
+    const index = [...document.querySelectorAll('.prose p')].indexOf(paragraph) + 1;
+    return `第 ${index} 段`;
+  }
+
+  function buildMarkers() {
+    const marks = document.getElementById('marks');
+    marks.innerHTML = '';
+    const tops = collectLineTops();
+    const height = ruler.clientHeight;
+    if (!tops.length || !height) return;
+    const total = tops.length;
+    const selector = state.pending
+      ? '.prose .del, .prose .ins, .prose .pending'
+      : '.prose .del, .prose .ins';
+    const ranges = [...document.querySelectorAll(selector)].map((element) => {
+      const span = lineSpanFor(element, tops);
+      if (!span) return null;
+      const color = element.classList.contains('del')
+        ? 'red'
+        : (element.classList.contains('ins') ? 'green' : 'pending');
+      return { ...span, color, paragraph: element.closest('p') };
+    }).filter(Boolean);
+
+    const merged = [];
+    for (const range of ranges.sort((a, b) => a.start - b.start || a.end - b.end)) {
+      const last = merged[merged.length - 1];
+      const sameState = last && ((range.color === 'pending') === last.colors.has('pending'));
+      if (last && sameState && range.start <= last.end + 1) {
+        last.end = Math.max(last.end, range.end);
+        last.colors.add(range.color);
+      } else {
+        merged.push({ ...range, colors: new Set([range.color]) });
+      }
+    }
+
+    for (const range of merged) {
+      const rawHeight = ((range.end - range.start + 1) / total) * height;
+      const block = Math.max(3, rawHeight);
+      let top = (range.start / total) * height;
+      if (block > rawHeight) top -= (block - rawHeight) / 2;
+      top = Math.max(0, Math.min(height - block, top));
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'marker';
+      const hasRed = range.colors.has('red');
+      const hasGreen = range.colors.has('green');
+      const onlyPending = range.colors.size === 1 && range.colors.has('pending');
+
+      if (onlyPending) {
+        button.classList.add('pending');
+        button.dataset.colors = 'pending';
+        button.title = `${paragraphLabel(range.paragraph)} · 正在改写`;
+      } else if (hasRed && hasGreen) {
+        button.dataset.colors = 'blue';
+        button.title = `${paragraphLabel(range.paragraph)} · 修改`;
+      } else if (hasRed) {
+        button.dataset.colors = 'red';
+        button.title = `${paragraphLabel(range.paragraph)} · 删除`;
+      } else if (hasGreen) {
+        button.dataset.colors = 'green';
+        button.title = `${paragraphLabel(range.paragraph)} · 新增`;
+      } else {
+        continue;
+      }
+
+      button.dataset.target = range.paragraph?.id || '';
+      button.setAttribute('aria-label', button.title);
+      button.style.top = `${Math.round(top)}px`;
+      button.style.height = `${Math.round(block)}px`;
+      marks.appendChild(button);
+    }
+  }
+
+  function layoutThumb() {
+    const total = reader.scrollHeight;
+    const viewport = reader.clientHeight;
+    const height = ruler.clientHeight;
+    if (!total || !height || !viewport) return;
+    const thumb = document.getElementById('scrollThumb');
+    const maxScroll = Math.max(1, total - viewport);
+    const thumbHeight = total <= viewport
+      ? height
+      : Math.max(24, Math.round((viewport / total) * height));
+    const thumbTop = total <= viewport
+      ? 0
+      : Math.round((reader.scrollTop / maxScroll) * (height - thumbHeight));
+    thumb.style.height = `${thumbHeight}px`;
+    thumb.style.top = `${thumbTop}px`;
+    thumb.setAttribute('aria-valuenow', String(Math.round((reader.scrollTop / maxScroll) * 100)));
+  }
+
+  document.getElementById('widthChoices').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-width]');
+    if (!button) return;
+    state.width = Number(button.dataset.width);
+    apply();
+  });
+
+  document.getElementById('lengthChoices').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-length]');
+    if (!button) return;
+    state.long = button.dataset.length === 'long';
+    buildFiller();
+    document.getElementById('filler').hidden = !state.long;
+    apply();
+  });
+
+  document.getElementById('timingChoices').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-timing]');
+    if (!button) return;
+    state.timing = button.dataset.timing;
+    apply();
+  });
+
+  document.getElementById('pendingChoices').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-pending]');
+    if (!button) return;
+    state.pending = button.dataset.pending === 'on';
+    apply();
+  });
+
+  document.getElementById('jumpChoices').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-jump]');
+    if (!button) return;
+    state.jump = button.dataset.jump === 'on';
+    apply();
+  });
+
+  ruler.addEventListener('click', (event) => {
+    const marker = event.target.closest('.marker');
+    if (marker) {
+      if (!state.jump) return;
+      const target = document.getElementById(marker.dataset.target);
+      if (!target) return;
+      const top = target.offsetTop - reader.clientHeight / 2 + target.offsetHeight / 2;
+      reader.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+      target.classList.remove('flash');
+      void target.offsetWidth;
+      target.classList.add('flash');
+      return;
+    }
+    if (event.target.closest('.thumb')) return;
+    const rect = ruler.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+    const top = ratio * reader.scrollHeight - reader.clientHeight / 2;
+    reader.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+  });
+
+  const thumb = document.getElementById('scrollThumb');
+  let drag = null;
+
+  thumb.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    showThumb();
+    thumb.setPointerCapture(event.pointerId);
+    thumb.classList.add('dragging');
+    drag = { startY: event.clientY, startScroll: reader.scrollTop };
+  });
+
+  thumb.addEventListener('pointermove', (event) => {
+    if (!drag) return;
+    const height = ruler.clientHeight;
+    const maxScroll = Math.max(1, reader.scrollHeight - reader.clientHeight);
+    const travel = Math.max(1, height - thumb.offsetHeight);
+    const delta = ((event.clientY - drag.startY) / travel) * maxScroll;
+    reader.scrollTop = Math.max(0, Math.min(maxScroll, drag.startScroll + delta));
+  });
+
+  function endDrag(event) {
+    if (!drag) return;
+    drag = null;
+    thumb.classList.remove('dragging');
+    if (event?.pointerId !== undefined && thumb.hasPointerCapture(event.pointerId)) {
+      thumb.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  thumb.addEventListener('pointerup', endDrag);
+  thumb.addEventListener('pointercancel', endDrag);
+
+  reader.addEventListener('keydown', (event) => {
+    const page = reader.clientHeight * 0.9;
+    const keys = {
+      ArrowDown: 44,
+      ArrowUp: -44,
+      PageDown: page,
+      PageUp: -page,
+      Home: -reader.scrollHeight,
+      End: reader.scrollHeight,
+    };
+    if (!(event.key in keys)) return;
+    event.preventDefault();
+    reader.scrollBy({ top: keys[event.key], behavior: 'smooth' });
+  });
+
+  let scrollFrame = 0;
+  reader.addEventListener('scroll', () => {
+    showThumb();
+    if (scrollFrame) return;
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = 0;
+      layoutThumb();
+    });
+  });
+  reader.addEventListener('focus', showThumb);
+
+  document.getElementById('copyPick').addEventListener('click', async () => {
+    const text = pickText.textContent;
+    try {
+      await navigator.clipboard.writeText(text);
+      copyStatus.textContent = '已复制';
+    } catch {
+      const range = document.createRange();
+      range.selectNodeContents(pickText);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      copyStatus.textContent = '已选中';
+    }
+    setTimeout(() => { copyStatus.textContent = ''; }, 1600);
+  });
+
+  function rebuild() {
+    buildMarkers();
+    layoutThumb();
+  }
+
+  window.addEventListener('resize', rebuild);
+  if (document.fonts?.ready) document.fonts.ready.then(rebuild).catch(() => {});
+  apply();
+</script>

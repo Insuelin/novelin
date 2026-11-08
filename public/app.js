@@ -6,12 +6,11 @@ import { toast } from './ui/toast.js';
 import { closeDropdowns, settleConfirm, applyAccent, loadAccent, tickClock } from './ui/primitives.js';
 import { bus } from './core/bus.js';
 import { closeChapterMenu, checkSelection } from './features/manuscript.js';
-import { runAi, stopAi, connectAiAgent } from './features/ai-agent.js';
+import { runAi, stopAi } from './features/ai-agent.js';
 import { loadBooks, renderLibrary, wireLibraryEvents } from './features/library.js';
 import {
   renderWorkspace,
   flushBriefingDialog,
-  refreshBookAfterAi,
   wireWorkspaceEvents,
 } from './features/workspace.js';
 import { flushSave, saveAll } from './features/persistence.js';
@@ -82,7 +81,6 @@ async function openBookById(id) {
 
 /* ---------- events ---------- */
 function wireEvents() {
-  bus.on('book:refresh', (payload = {}) => refreshBookAfterAi(payload));
   bus.on('ai:run', (payload = {}) => runAi(payload));
   bus.on('book:open', ({ id } = {}) => {
     if (id) openBookById(id);
@@ -176,7 +174,6 @@ function wireEvents() {
 }
 
 /* ---------- boot ---------- */
-connectAiAgent({ flushSave, refreshBookAfterAi });
 loadAccent();
 wireEvents();
 tickClock();

@@ -9,14 +9,8 @@ import { markPendingSelection, markReviewPending } from './pending-marks.js';
 import { startReview, clearReview, applyPreviewOp, openProposalReview, buildReviewDecisions } from './ai-review.js';
 import { updateReviewBar } from './review-view.js';
 import { markSummaryPending, startAppendedSummaries } from './summaries.js';
-
-let flushSaveImpl = async () => {};
-let refreshBookAfterAiImpl = async () => {};
-
-export function connectAiAgent({ flushSave, refreshBookAfterAi } = {}) {
-  if (typeof flushSave === 'function') flushSaveImpl = flushSave;
-  if (typeof refreshBookAfterAi === 'function') refreshBookAfterAiImpl = refreshBookAfterAi;
-}
+import { flushSave } from './persistence.js';
+import { bus } from '../core/bus.js';
 
 /* ---------- agent ---------- */
 export function renderAgent({ reset = false } = {}) {
@@ -254,7 +248,7 @@ export async function runAi({ action = 'chapter', useSelection = false, plotItem
     return;
   }
 
-  await flushSaveImpl();
+  await flushSave();
   if (state.dirty.size) {
     toast('正文还没保存成功，先处理保存错误', 'error');
     return;
@@ -325,7 +319,7 @@ export async function runAi({ action = 'chapter', useSelection = false, plotItem
     if (written) {
       aiLog('OK', '正文已更新，正在刷新', 'ok');
       clearReview({ render: false });
-      await refreshBookAfterAiImpl({ scrollEnd: action === 'chapter' });
+      await bus.emit('book:refresh', { scrollEnd: action === 'chapter' });
     }
     if (!state.aiProposal && !hadError) {
       if (state.aiReview) {
@@ -387,7 +381,7 @@ export async function respondProposal(action) {
       state.aiProposal = null;
       updateReviewBar();
       setAiState('DONE', 'done');
-      await refreshBookAfterAiImpl({ scrollEnd });
+      await bus.emit('book:refresh', { scrollEnd });
       if (appended.length) startAppendedSummaries(bookId, appended);
     } else {
       aiLog('SYS', '提案已拒绝');

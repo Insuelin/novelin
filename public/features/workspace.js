@@ -1,5 +1,6 @@
 import { state } from '../core/state.js';
 import { $, $$ } from '../core/dom.js';
+import { bus } from '../core/bus.js';
 import { countWords, getManuscriptTitle, countChapters, formatNumber } from '../core/format.js';
 import { api } from '../core/api.js';
 import { toast, setSaveState } from '../ui/toast.js';
@@ -224,6 +225,8 @@ export function flushBriefingDialog() {
 
 /* ---------- events ---------- */
 export function wireWorkspaceEvents() {
+  bus.on('book:refresh', (payload = {}) => refreshBookAfterAi(payload));
+
   $('#briefing-tabs').addEventListener('click', (event) => {
     const button = event.target.closest('[data-tab]');
     if (button) activateTab(button.dataset.tab);

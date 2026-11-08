@@ -40,7 +40,7 @@ export function reviewChangesSorted(review) {
   return [...(review.changes || [])].sort((a, b) => a.start - b.start);
 }
 
-function growReviewEditor(element) {
+export function growReviewEditor(element) {
   element.style.height = 'auto';
   element.style.height = `${element.scrollHeight}px`;
 }

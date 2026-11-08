@@ -915,6 +915,20 @@ dialog.modal-model{width:min(640px,calc(100vw - 32px))}
 .terms-saved-item button{padding:0 0 0 2px;color:var(--dim);font-size:10px;line-height:1}
 .terms-saved-item button:hover{color:var(--danger)}
 .terms-saved-empty{font-family:var(--mono);font-size:9px;color:var(--dim)}
+.audit-query{min-height:96px;resize:vertical}
+.audit-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.audit-hint{margin-top:10px;font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:var(--dim)}
+.audit-list{max-height:min(52vh,520px);overflow-y:auto;margin-top:12px;scrollbar-width:thin;scrollbar-color:var(--accent-line) rgba(255,255,255,.05)}
+.audit-item{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;padding:12px 2px;border-bottom:1px solid rgba(255,255,255,.06);cursor:pointer}
+.audit-item input{margin-top:3px;accent-color:var(--accent)}
+.audit-main{min-width:0}
+.audit-head{font-family:var(--mono);font-size:8px;letter-spacing:.14em;color:var(--accent)}
+.audit-quote{margin-top:6px;font-family:var(--serif);font-size:13px;line-height:1.8;color:var(--text);white-space:pre-wrap;overflow-wrap:anywhere}
+.audit-reason{margin-top:4px;font-size:11px;line-height:1.7;color:var(--muted)}
+.audit-context{margin-top:6px}
+.audit-context summary{font-family:var(--mono);font-size:8px;letter-spacing:.1em;color:var(--dim);cursor:pointer}
+.audit-context pre{margin:6px 0 0;padding:8px 10px;border:1px solid var(--line);background:rgba(0,0,0,.22);font-family:var(--serif);font-size:12px;line-height:1.7;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow-y:auto}
+.audit-empty{padding:18px 0;font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--dim)}
 
 /* ---------- toasts ---------- */
 .toasts{position:fixed;right:20px;bottom:44px;z-index:80;display:flex;flex-direction:column;gap:8px;pointer-events:none;max-width:min(380px,calc(100vw - 40px))}

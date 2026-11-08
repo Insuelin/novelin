@@ -5,6 +5,7 @@ import { createStore } from './lib/store.js';
 import { searchBooks } from './lib/search.js';
 import { createAiClient } from './lib/ai.js';
 import { runAgent, summarizeChapter } from './lib/agent.js';
+import { runAudit } from './lib/audit.js';
 import { applyDecisions, applyOps, listProposals, getProposal, setProposalStatus } from './lib/proposals.js';
 import { normalizeAgentSettings } from './lib/agent-settings.js';
 import { parseChapters } from './lib/chapters.js';
@@ -99,14 +100,45 @@ export function createApp({ dataDir, aiClient } = {}) {
     if (!['auto', 'diff'].includes(mode)) {
       return res.status(400).json({ error: 'mode 只能是 auto 或 diff' });
     }
-    if (!['chapter', 'revise', 'chat'].includes(action)) {
-      return res.status(400).json({ error: 'action 只能是 chapter / revise / chat' });
+    if (!['chapter', 'revise', 'chat', 'plot'].includes(action)) {
+      return res.status(400).json({ error: 'action 只能是 chapter / revise / chat / plot' });
     }
     if (instruction.length > 8000) {
       return res.status(400).json({ error: 'instruction 太长' });
     }
     if (!instruction && action !== 'chapter') {
       return res.status(400).json({ error: 'instruction 不能为空' });
+    }
+
+    const rawPlotItems = Array.isArray(body.plotItems) ? body.plotItems.slice(0, 8) : [];
+    const plotItems = [];
+    if (action === 'plot') {
+      if (!rawPlotItems.length) {
+        return res.status(400).json({ error: 'plotItems 不能为空' });
+      }
+      for (const raw of rawPlotItems) {
+        const quote = String(raw?.quote || '').trim();
+        if (!quote || quote.length > 400) continue;
+
+        const first = book.manuscript.indexOf(quote);
+        if (first < 0) continue;
+        const second = book.manuscript.indexOf(quote, first + quote.length);
+        if (second >= 0) continue;
+
+        const chapterIndex = Number(raw.chapterIndex);
+        plotItems.push({
+          chapterIndex: Number.isInteger(chapterIndex) ? chapterIndex : null,
+          quote,
+          reason: String(raw.reason || '').trim().slice(0, 300),
+          context: String(raw.context || '').slice(0, 2000),
+          contextScope: ['paragraph', 'scene', 'chapter'].includes(raw.contextScope)
+            ? raw.contextScope
+            : 'paragraph',
+        });
+      }
+      if (!plotItems.length) {
+        return res.status(400).json({ error: '选中的段落已经对不上正文，请重新审查' });
+      }
     }
     if (selection !== null) {
       if (
@@ -163,6 +195,8 @@ export function createApp({ dataDir, aiClient } = {}) {
       maxTokens: settings.maxTokens,
       maxSteps: settings.maxSteps,
       reasoningEffort: settings.reasoningEffort,
+      plotItems: plotItems.length,
+      plotDropped: action === 'plot' ? rawPlotItems.length - plotItems.length : 0,
     });
 
     try {
@@ -174,6 +208,7 @@ export function createApp({ dataDir, aiClient } = {}) {
         mode,
         action,
         selection,
+        plotItems,
         model,
         maxTokens: settings.maxTokens,
         maxSteps: settings.maxSteps,
@@ -355,6 +390,74 @@ export function createApp({ dataDir, aiClient } = {}) {
     try {
       const result = await store.cleanTerms(req.params.id, req.body || {});
       return res.json(result);
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  app.post('/api/books/:id/audit', async (req, res, next) => {
+    try {
+      const query = String(req.body?.query || '').trim();
+      if (!query) return res.status(400).json({ error: 'query 不能为空' });
+      if (query.length > 2000) return res.status(400).json({ error: 'query 太长' });
+
+      const book = await store.getBook(req.params.id);
+      if (!book) return res.status(404).json({ error: '书籍不存在' });
+      if (!book.manuscript.trim()) return res.status(400).json({ error: '正文还是空的' });
+
+      const settings = normalizeAgentSettings(book.meta);
+      const state = {
+        manuscript: book.manuscript,
+        outline: book.outline,
+        notes: book.notes,
+        summaries: book.summaries.map((item) => ({ ...item })),
+        chapters: [],
+        chaptersDirty: true,
+      };
+
+      const controller = new AbortController();
+      const onClose = () => controller.abort();
+      res.on('close', onClose);
+
+      try {
+        let result;
+        try {
+          result = await runAudit({
+            ai,
+            model: settings.researchModel,
+            book,
+            state,
+            question: query,
+            signal: controller.signal,
+          });
+        } catch (err) {
+          if (controller.signal.aborted) return;
+          throw err;
+        }
+        if (controller.signal.aborted) return;
+        if (result.error) {
+          return res.status(502).json({
+            error: result.error,
+            issues: result.issues || [],
+            warnings: result.warnings || [],
+            chunks: result.chunks,
+            scanned: result.scanned,
+            failedChunks: result.failedChunks,
+            timedOut: result.timedOut,
+          });
+        }
+        return res.json({
+          query,
+          issues: result.issues,
+          warnings: result.warnings,
+          chunks: result.chunks,
+          scanned: result.scanned,
+          failedChunks: result.failedChunks,
+          timedOut: result.timedOut,
+        });
+      } finally {
+        res.off('close', onClose);
+      }
     } catch (err) {
       return next(err);
     }

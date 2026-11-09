@@ -21,10 +21,6 @@ export function startTitleEdit() {
   const heading = $('#ms-title');
   const input = $('#ms-title-input');
   if (!book || !heading || !input || state.titleEditing) return;
-  if (state.blockEdit) {
-    toast('先 APPLY 或取消当前段落', 'error');
-    return;
-  }
 
   state.titleEditing = true;
   input.value = getManuscriptTitle(book.manuscript)?.title || book.meta.title || '';

@@ -11,7 +11,8 @@ export function clearPendingMarks(root = $('#prose')) {
 export function wrapTextRange(range) {
   if (!range || range.collapsed) return null;
   const prose = $('#prose');
-  if (!prose || !prose.contains(range.commonAncestorContainer)) return null;
+  if (!prose || prose.querySelector('.cm-editor')) return null;
+  if (!prose.contains(range.commonAncestorContainer)) return null;
 
   const nodes = [];
   const walker = document.createTreeWalker(prose, NodeFilter.SHOW_TEXT, {
@@ -135,7 +136,8 @@ export function markReviewPending({ scroll = false } = {}) {
 export function markPendingSelection() {
   const prose = $('#prose');
   const selection = window.getSelection();
-  if (!prose || !selection || selection.isCollapsed || !selection.rangeCount) return false;
+  if (!prose || prose.querySelector('.cm-editor')) return false;
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return false;
 
   const range = selection.getRangeAt(0);
   if (!prose.contains(range.commonAncestorContainer)) return false;

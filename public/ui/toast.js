@@ -21,6 +21,22 @@ export function toast(message, type = 'info', duration = 2800) {
 export function setSaveState(label, tone = '') {
   const element = $('#save-state');
   if (!element) return;
-  element.textContent = label;
+
+  const text = String(label ?? '');
+  const state = /FAIL|ERROR/i.test(text)
+    ? 'error'
+    : /SAVING/i.test(text)
+      ? 'saving'
+      : /UNSAVED/i.test(text)
+        ? 'unsaved'
+        : 'saved';
+
+  element.dataset.state = state;
   element.className = `save-state ${tone}`.trim();
+  element.title = text;
+  element.setAttribute('aria-label', text);
+
+  const labelElement = element.querySelector('.save-label');
+  if (labelElement) labelElement.textContent = text;
+  else element.textContent = text;
 }

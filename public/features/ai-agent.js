@@ -216,10 +216,6 @@ export async function runAi({ action = 'chapter', useSelection = false, plotItem
     return;
   }
   if (state.aiRunning) return;
-  if (state.blockEdit) {
-    toast('先 APPLY 或取消当前段落', 'error');
-    return;
-  }
   if (state.aiProposal?.status === 'pending') {
     toast('先处理当前提案', 'error');
     return;

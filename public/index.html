@@ -119,7 +119,7 @@
         <a href="#/library">LIBRARY</a><span class="sep">/</span><b id="ws-breadcrumb">—</b><span class="sep">/</span><span id="ws-status">—</span>
       </div>
       <div class="desk-actions">
-        <span class="save-state" id="save-state">SAVED</span>
+        <span class="save-state" id="save-state" data-state="saved" role="status" aria-live="polite"><svg class="save-icon" viewBox="0 0 16 16" aria-hidden="true"><circle class="save-ring" cx="8" cy="8" r="6.3"></circle><path class="save-check" d="M4.9 8.3 7 10.4l4.2-4.6"></path><path class="save-cross" d="M5.2 5.2l5.6 5.6M10.8 5.2l-5.6 5.6"></path><path class="save-pencil" d="M8 4.4v4.4M8 11v.2"></path><circle class="save-spin" cx="8" cy="8" r="6.3"></circle></svg><span class="save-label">SAVED</span></span>
       </div>
     </div>
 
@@ -182,13 +182,12 @@
               <h2 id="ms-title" tabindex="0" role="button" title="点击编辑书名">—</h2>
               <input id="ms-title-input" class="ms-title-input" type="text" maxlength="200" aria-label="书名" hidden>
             </div>
-            <div class="ms-meta"><span id="ms-words">0 字</span><br><span id="ms-mode-label">READ</span></div>
+            <div class="ms-meta"><span id="ms-words">0 字</span><br><span id="ms-mode-label">EDIT</span></div>
           </div>
           <div class="ms-toolbar">
-            <button class="btn ghost small" id="source-btn" type="button">源码 / SOURCE</button>
             <button class="btn ghost small" id="terms-btn" type="button">用词 / TERMS</button>
             <button class="btn ghost small" id="audit-btn" type="button">情节审查 / AUDIT</button>
-            <span class="hint">单击段落编辑 · 拖选可 AI 改写 · Ctrl+S 保存 · Esc 取消</span>
+            <span class="hint">点正文直接改 · 拖选可 AI 改写 · 点外面自动保存</span>
           </div>
           <div class="review-bar" id="review-bar" hidden>
             <div class="review-state">
@@ -203,7 +202,6 @@
           </div>
           </div>
           <article id="prose" class="prose"></article>
-          <div class="prose-tail" id="prose-tail" data-block-append><span>单击这里继续写</span></div>
           <div class="selection-note" id="selection-note" hidden>
             <span id="selection-info">SELECTED · 0 字</span>
             <div class="acts"><button class="text-btn" id="selection-revise" type="button">AI 改写选中</button></div>
@@ -427,25 +425,6 @@
         <div class="terms-saved-head">本书用词规则</div>
         <div class="terms-saved" id="terms-saved"></div>
       </div>
-    </div>
-  </div>
-</dialog>
-
-<dialog id="source-dialog" class="modal modal-wide source-dialog">
-  <div class="modal-frame">
-    <div class="modal-head">
-      <div>
-        <div class="eyebrow">/// SOURCE / 全文源码</div>
-        <h2>编辑 Markdown</h2>
-      </div>
-      <button class="icon-btn" type="button" data-close-dialog="source-dialog" aria-label="关闭">×</button>
-    </div>
-    <div class="modal-body">
-      <textarea id="manuscript-editor" class="manuscript-editor" spellcheck="false" placeholder="从这里开始写，或者让 AI 写下一章。"></textarea>
-    </div>
-    <div class="modal-actions">
-      <span class="modal-hint">直接编辑会立即保存，关闭后回到阅读视图。</span>
-      <button class="btn small" type="button" id="source-save">保存 / SAVE</button>
     </div>
   </div>
 </dialog>

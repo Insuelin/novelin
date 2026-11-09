@@ -4,6 +4,7 @@ import { formatNumber } from '../core/format.js';
 import { api } from '../core/api.js';
 import { bus } from '../core/bus.js';
 import { toast } from '../ui/toast.js';
+import { flushSave } from './persistence.js';
 
 const TERM_SCOPE_LABELS = {
   manuscript: '正文',
@@ -82,6 +83,12 @@ export async function previewTermClean() {
   const book = state.current;
   if (!book) return null;
 
+  await flushSave();
+  if (state.dirty.size) {
+    toast('正文还没保存成功，先处理保存错误', 'error');
+    return null;
+  }
+
   const find = String($('#terms-find')?.value || '').trim();
   const replace = String($('#terms-replace')?.value || '');
   const scopes = selectedTermScopes();
@@ -105,7 +112,7 @@ export async function previewTermClean() {
 export async function applyTermClean() {
   const book = state.current;
   if (!book) return;
-  if (state.aiRunning || state.aiProposal?.status === 'pending' || state.summaryBusy || state.blockEdit) {
+  if (state.aiRunning || state.aiProposal?.status === 'pending' || state.summaryBusy) {
     toast('还有任务在跑，等它结束再替换', 'error');
     return;
   }

@@ -40,8 +40,7 @@ import {
   hideSelection,
 } from './manuscript.js';
 import { clearReview } from './ai-review.js';
-import { wireBlockEditorEvents } from './block-editor.js';
-import { wireSourceDialog } from './source-dialog.js';
+import { editorIsActive, editorScrollTo } from './editor.js';
 import { renderAgent, setAiMode, runAi, stopAi, respondProposal } from './ai-agent.js';
 import { updateBookSummary } from './library.js';
 import { updateTitleDisplay, startTitleEdit, stopTitleEdit, commitTitleEdit, markDirty, saveAll } from './persistence.js';
@@ -132,7 +131,6 @@ export function renderWorkspace() {
   $('#ai-model-label').textContent = book.meta.model || '—';
 
   setSaveState('SAVED', 'ok');
-  $('#ms-mode-label').textContent = 'READ';
   activateTab('theme');
   renderProse();
   hideSelection();
@@ -159,8 +157,9 @@ export async function refreshBookAfterAi({ scrollEnd = false } = {}) {
       renderWorkspace();
       activateTab(tab);
       requestAnimationFrame(() => {
+        if (scrollEnd && editorIsActive()) editorScrollTo(Number.MAX_SAFE_INTEGER);
         const manuscript = $('.manuscript');
-        if (manuscript) manuscript.scrollTop = scrollEnd ? manuscript.scrollHeight : scroll;
+        if (manuscript && !editorIsActive()) manuscript.scrollTop = scrollEnd ? manuscript.scrollHeight : scroll;
       });
     }
 
@@ -229,8 +228,6 @@ export function flushBriefingDialog() {
 /* ---------- events ---------- */
 export function wireWorkspaceEvents() {
   bus.on('book:refresh', (payload = {}) => refreshBookAfterAi(payload));
-  wireBlockEditorEvents();
-  wireSourceDialog();
 
   $('#briefing-tabs').addEventListener('click', (event) => {
     const button = event.target.closest('[data-tab]');

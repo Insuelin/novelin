@@ -4,6 +4,7 @@ import { pad2 } from '../core/format.js';
 import { API, api } from '../core/api.js';
 import { bus } from '../core/bus.js';
 import { toast } from '../ui/toast.js';
+import { flushSave } from './persistence.js';
 
 let auditChapters = [];
 let auditScopeToken = 0;
@@ -115,12 +116,18 @@ export function clearAuditChapters() {
   updateAuditScopeState();
 }
 
-export function openAuditDialog() {
+export async function openAuditDialog() {
   const book = state.current;
   const dialog = $('#audit-dialog');
   if (!book || !dialog) return;
   if (state.aiRunning || state.aiProposal?.status === 'pending') {
     toast('等 AI 处理完再审查', 'error');
+    return;
+  }
+
+  await flushSave();
+  if (state.dirty.size) {
+    toast('正文还没保存成功，先处理保存错误', 'error');
     return;
   }
 
@@ -147,6 +154,12 @@ export function openAuditDialog() {
 export async function scanPlotIssues() {
   const book = state.current;
   if (!book || state.auditBookId !== book.meta.id) return;
+
+  await flushSave();
+  if (state.dirty.size) {
+    toast('正文还没保存成功，先处理保存错误', 'error');
+    return;
+  }
 
   const query = String($('#audit-query')?.value || '').trim();
   if (!query) {

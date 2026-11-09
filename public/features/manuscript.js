@@ -2,65 +2,68 @@ import { state } from '../core/state.js';
 import { $, $$, escapeHtml, setText } from '../core/dom.js';
 import { countWords, getManuscriptTitle, parseChapterEntries, pad2 } from '../core/format.js';
 import { marked, sanitizeHtml, renderBlockMath, renderMath } from '../core/markdown.js';
-import { toast } from '../ui/toast.js';
 import { buildReviewSource, hydrateReviewEditors, renderPendingChapter } from './review-view.js';
-import { renderProseBlocks } from './prose-blocks.js';
 import { scheduleRulerRender, setRulerEnabled } from './diff-ruler.js';
 import { markReviewPending } from './pending-marks.js';
 import { updateAiControls } from './ai-controls.js';
+import {
+  destroyEditor,
+  editorAtBottom,
+  editorIsActive,
+  editorLineTop,
+  editorScrollTo,
+  editorScrollTop,
+  editorSelectText,
+  editorSelection,
+  mountEditor,
+} from './editor.js';
 
 export function renderProse() {
   const book = state.current;
   if (!book) return;
 
   const prose = $('#prose');
+  const manuscript = $('.manuscript');
   const review = state.aiReview;
-  const source = review ? buildReviewSource(review) : (book.manuscript || '');
+  const modeLabel = $('#ms-mode-label');
 
-  if (state.blockEdit) {
-    const edit = state.blockEdit;
-    state.blockEdit = null;
-    clearTimeout(edit.previewTimer);
-    if (edit.tail) edit.tail.hidden = false;
-    edit.container?.remove();
-    const modeLabel = $('#ms-mode-label');
-    if (modeLabel) modeLabel.textContent = 'READ';
-    updateAiControls();
-  }
-
-  const tail = $('#prose-tail');
-  if (tail) tail.hidden = Boolean(review);
-
-  if (!source.trim() && !review) {
-    state.proseBlocks = [];
-    state.proseFallback = true;
-    prose.innerHTML = '<div class="prose-empty" data-block-append>正文还是空的。单击这里开始写第一段。</div>';
-    if (tail) tail.hidden = true;
-    state.chapterEls = [];
-    refreshChapterNav();
-    setRulerEnabled();
+  if (review) {
+    destroyEditor();
+    manuscript?.classList.remove('editor-mode');
+    prose.classList.remove('prose-live');
+    if (modeLabel) modeLabel.textContent = 'AI DIFF';
+    renderReviewProse(prose, review);
     return;
   }
 
-  if (review) {
-    state.proseBlocks = [];
-    state.proseFallback = true;
-    const html = [];
-    if (review.notice) {
-      html.push(`<div class="ai-review-note">${escapeHtml(review.notice)}</div>`);
-    }
-    if (source.trim()) {
-      html.push(marked.parse(source, { breaks: true, gfm: true }));
-    }
-    html.push(renderPendingChapter(review));
-    prose.innerHTML = sanitizeHtml(html.join(''));
-    hydrateReviewEditors(prose);
-  } else {
-    const rendered = renderProseBlocks(source, marked);
-    prose.replaceChildren(rendered.fragment);
-    state.proseBlocks = rendered.analysis.blocks;
-    state.proseFallback = rendered.fallback;
+  manuscript?.classList.add('editor-mode');
+  if (modeLabel) modeLabel.textContent = 'EDIT';
+  state.chapterEls = [];
+  mountEditor(prose, book, { onScroll: updateChapterFromScroll });
+  refreshChapterNav();
+  requestAnimationFrame(updateChapterFromScroll);
+
+  if (state.pendingHighlight) {
+    const query = state.pendingHighlight;
+    state.pendingHighlight = '';
+    requestAnimationFrame(() => editorSelectText(query));
   }
+
+  setRulerEnabled();
+}
+
+function renderReviewProse(prose, review) {
+  const source = buildReviewSource(review);
+  const html = [];
+  if (review.notice) {
+    html.push(`<div class="ai-review-note">${escapeHtml(review.notice)}</div>`);
+  }
+  if (source.trim()) {
+    html.push(marked.parse(source, { breaks: true, gfm: true }));
+  }
+  html.push(renderPendingChapter(review));
+  prose.innerHTML = sanitizeHtml(html.join(''));
+  hydrateReviewEditors(prose);
   renderBlockMath(prose);
   renderMath(prose);
 
@@ -82,7 +85,7 @@ export function renderProse() {
 
   const allHeadings = $$('#prose h1, #prose h2')
     .filter((element) => !element.closest('.ai-pending-chapter') && !element.classList.contains('ms-book-title'));
-  const bookTitle = String(state.current.meta.title || '').trim();
+  const bookTitle = String(state.current?.meta.title || '').trim();
   const skipFirst = allHeadings.length > 1 && bookTitle && allHeadings[0].textContent.trim() === bookTitle;
   state.chapterEls = allHeadings.slice(skipFirst ? 1 : 0);
   state.chapterEls.forEach((element, index) => {
@@ -133,7 +136,8 @@ export function refreshChapterNav({ reset = false } = {}) {
   const book = state.current;
   if (!book) return;
 
-  state.chapters = parseChapterEntries(book.manuscript, book.meta.title);
+  const source = String(book.manuscript || '').replace(/\r\n?/g, '\n');
+  state.chapters = parseChapterEntries(source, book.meta.title);
   if (reset) state.currentChapter = 0;
 
   renderChapterMenu();
@@ -188,45 +192,60 @@ export function closeChapterMenu() {
 
 export function jumpToChapter(index) {
   if (!state.chapters.length) return;
-  if (state.blockEdit) {
-    toast('先 APPLY 或取消当前段落', 'error');
-    return;
-  }
 
   setCurrentChapter(index);
   closeChapterMenu();
 
-  const manuscript = $('.manuscript');
-  const element = state.chapterEls[index];
-  if (!manuscript) return;
-
   state.chapterJumping = true;
   state.chapterJumpToken += 1;
   const token = state.chapterJumpToken;
+  const chapter = state.chapters[index];
 
-  if (!element) {
-    manuscript.scrollTo({ top: 0, behavior: 'smooth' });
+  if (editorIsActive()) {
+    editorScrollTo(chapter?.start || 0);
   } else {
-    const stickyHeight = $('.ms-sticky')?.getBoundingClientRect().height || 0;
-    const target = manuscript.scrollTop
-      + element.getBoundingClientRect().top
-      - manuscript.getBoundingClientRect().top
-      - stickyHeight
-      - 8;
-    manuscript.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+    const manuscript = $('.manuscript');
+    const element = state.chapterEls[index];
+    if (!manuscript) return;
+
+    if (!element) {
+      manuscript.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      const stickyHeight = $('.ms-sticky')?.getBoundingClientRect().height || 0;
+      const target = manuscript.scrollTop
+        + element.getBoundingClientRect().top
+        - manuscript.getBoundingClientRect().top
+        - stickyHeight
+        - 8;
+      manuscript.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+    }
   }
 
   setTimeout(() => {
     if (token !== state.chapterJumpToken) return;
     state.chapterJumping = false;
     setCurrentChapter(index);
-    updateChapterFromScroll();
   }, 700);
 }
 
 export function updateChapterFromScroll() {
-  if (state.chapterJumping || state.blockEdit) return;
+  if (state.chapterJumping) return;
   if (state.view !== 'workspace' || !state.chapters.length) return;
+
+  if (editorIsActive()) {
+    if (editorAtBottom()) {
+      setCurrentChapter(state.chapters.length - 1);
+      return;
+    }
+    const threshold = editorScrollTop() + 12;
+    let index = 0;
+    state.chapters.forEach((chapter, position) => {
+      if (editorLineTop(chapter.start || 0) <= threshold) index = position;
+    });
+    setCurrentChapter(Math.min(index, state.chapters.length - 1));
+    return;
+  }
+
   const manuscript = $('.manuscript');
   if (!manuscript) return;
 
@@ -321,8 +340,28 @@ function selectionChapterTitle(range, prose) {
 }
 
 export function checkSelection() {
-  if (state.view !== 'workspace' || state.blockEdit) {
+  if (state.view !== 'workspace') {
     hideSelection();
+    return;
+  }
+
+  if (editorIsActive()) {
+    const selected = editorSelection();
+    if (!selected || !selected.text.trim()) {
+      hideSelection();
+      return;
+    }
+    state.selectionText = selected.text.slice(0, 8000);
+    state.selectionContext = {
+      text: state.selectionText,
+      before: selected.before,
+      after: selected.after,
+      chapter: selected.chapter,
+      truncated: selected.truncated,
+    };
+    setText($('#selection-info'), `SELECTED · ${countWords(selected.text)} 字`);
+    $('#selection-note').hidden = false;
+    updateAiControls();
     return;
   }
 

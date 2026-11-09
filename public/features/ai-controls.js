@@ -178,7 +178,7 @@ export function updateAiControls() {
   const enabled = Boolean(book?.meta.aiEnabled);
   const running = state.aiRunning;
   const pending = state.aiProposal?.status === 'pending';
-  const busy = running || pending || Boolean(state.blockEdit);
+  const busy = running || pending;
   const hasSelection = Boolean(state.selectionText);
 
   const instruction = $('#ai-instruction');

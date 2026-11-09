@@ -1,16 +1,13 @@
 import { state } from '../core/state.js';
 import { $, $$, escapeHtml, setText } from '../core/dom.js';
-import { countWords, getManuscriptTitle, parseChapterEntries, pad2 } from '../core/format.js';
-import { marked, sanitizeHtml, renderBlockMath, renderMath } from '../core/markdown.js';
-import { buildReviewSource, hydrateReviewEditors, renderPendingChapter } from './review-view.js';
-import { scheduleRulerRender, setRulerEnabled } from './diff-ruler.js';
-import { markReviewPending } from './pending-marks.js';
+import { countWords, parseChapterEntries, pad2 } from '../core/format.js';
+import { setRulerEnabled } from './diff-ruler.js';
 import { updateAiControls } from './ai-controls.js';
 import {
-  destroyEditor,
   editorAtBottom,
   editorIsActive,
   editorLineTop,
+  editorReviewActive,
   editorScrollTo,
   editorScrollTop,
   editorSelectText,
@@ -24,15 +21,11 @@ export function renderProse() {
 
   const prose = $('#prose');
   const manuscript = $('.manuscript');
-  const review = state.aiReview;
   const modeLabel = $('#ms-mode-label');
 
-  if (review) {
-    destroyEditor();
-    manuscript?.classList.remove('editor-mode');
-    prose.classList.remove('prose-live');
+  if (editorReviewActive()) {
+    manuscript?.classList.add('editor-mode');
     if (modeLabel) modeLabel.textContent = 'AI DIFF';
-    renderReviewProse(prose, review);
     return;
   }
 
@@ -52,91 +45,14 @@ export function renderProse() {
   setRulerEnabled();
 }
 
-function renderReviewProse(prose, review) {
-  const source = buildReviewSource(review);
-  const html = [];
-  if (review.notice) {
-    html.push(`<div class="ai-review-note">${escapeHtml(review.notice)}</div>`);
-  }
-  if (source.trim()) {
-    html.push(marked.parse(source, { breaks: true, gfm: true }));
-  }
-  html.push(renderPendingChapter(review));
-  prose.innerHTML = sanitizeHtml(html.join(''));
-  hydrateReviewEditors(prose);
-  renderBlockMath(prose);
-  renderMath(prose);
-
-  const lead = prose.querySelector(':scope > p');
-  if (lead) lead.classList.add('lead');
-
-  $$('a', prose).forEach((link) => {
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-  });
-
-  if (getManuscriptTitle(source)) {
-    const firstH1 = prose.querySelector('h1');
-    if (firstH1) {
-      firstH1.hidden = true;
-      firstH1.classList.add('ms-book-title');
-    }
-  }
-
-  const allHeadings = $$('#prose h1, #prose h2')
-    .filter((element) => !element.closest('.ai-pending-chapter') && !element.classList.contains('ms-book-title'));
-  const bookTitle = String(state.current?.meta.title || '').trim();
-  const skipFirst = allHeadings.length > 1 && bookTitle && allHeadings[0].textContent.trim() === bookTitle;
-  state.chapterEls = allHeadings.slice(skipFirst ? 1 : 0);
-  state.chapterEls.forEach((element, index) => {
-    element.id = `chapter-${index}`;
-  });
-  refreshChapterNav();
-  requestAnimationFrame(updateChapterFromScroll);
-
-  if (state.pendingHighlight) {
-    const mark = highlightFirst(prose, state.pendingHighlight);
-    if (mark) mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    state.pendingHighlight = '';
-  }
-  markReviewPending();
-  setRulerEnabled();
-  scheduleRulerRender();
-}
-
-
-function highlightFirst(root, query) {
-  if (!query) return null;
-  const needle = query.toLowerCase();
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let node = walker.nextNode();
-
-  while (node) {
-    const text = node.nodeValue || '';
-    if (text) {
-      const at = text.toLowerCase().indexOf(needle);
-      if (at >= 0) {
-        const range = document.createRange();
-        range.setStart(node, at);
-        range.setEnd(node, at + query.length);
-        const mark = document.createElement('mark');
-        mark.className = 'hit';
-        range.surroundContents(mark);
-        return mark;
-      }
-    }
-    node = walker.nextNode();
-  }
-
-  return null;
-}
-
 
 export function refreshChapterNav({ reset = false } = {}) {
   const book = state.current;
   if (!book) return;
 
-  const source = String(book.manuscript || '').replace(/\r\n?/g, '\n');
+  const source = editorReviewActive() && state.aiReview
+    ? String(state.aiReview.text || '')
+    : String(book.manuscript || '').replace(/\r\n?/g, '\n');
   state.chapters = parseChapterEntries(source, book.meta.title);
   if (reset) state.currentChapter = 0;
 

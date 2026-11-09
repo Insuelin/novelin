@@ -7,7 +7,6 @@ import { toast, setSaveState } from '../ui/toast.js';
 import { syncStickyHeight } from '../ui/layout.js';
 import { setMaxTokens, setMaxSteps, setReasoningEffort, openModelDialog, selectModel } from './ai-controls.js';
 import { wireDiffRuler } from './diff-ruler.js';
-import { growReviewEditor, reviewChangesSorted } from './review-view.js';
 import {
   updateSummaryHint,
   scheduleSummarySave,
@@ -42,7 +41,12 @@ import {
   hideSelection,
 } from './manuscript.js';
 import { clearReview } from './ai-review.js';
-import { editorIsActive, editorScrollTo } from './editor.js';
+import {
+  editorIsActive,
+  editorScrollTo,
+  editorScrollTop,
+  editorSetScrollTop,
+} from './editor.js';
 import { renderAgent, setAiMode, runAi, stopAi, respondProposal } from './ai-agent.js';
 import { updateBookSummary } from './library.js';
 import { updateTitleDisplay, startTitleEdit, stopTitleEdit, commitTitleEdit, markDirty, saveAll } from './persistence.js';
@@ -141,13 +145,14 @@ export function renderWorkspace() {
   requestAnimationFrame(syncStickyHeight);
 }
 
-export async function refreshBookAfterAi({ scrollEnd = false } = {}) {
+export async function refreshBookAfterAi({ scrollToChapter = null } = {}) {
   const book = state.current;
   if (!book) return;
 
   const bookId = book.meta.id;
   const tab = $('#briefing-tabs button.on')?.dataset.tab || 'theme';
-  const scroll = $('.manuscript')?.scrollTop || 0;
+  const editorMode = editorIsActive();
+  const scroll = editorMode ? editorScrollTop() : ($('.manuscript')?.scrollTop || 0);
 
   try {
     const { book: next } = await api(`/books/${encodeURIComponent(bookId)}`);
@@ -159,9 +164,17 @@ export async function refreshBookAfterAi({ scrollEnd = false } = {}) {
       renderWorkspace();
       activateTab(tab);
       requestAnimationFrame(() => {
-        if (scrollEnd && editorIsActive()) editorScrollTo(Number.MAX_SAFE_INTEGER);
+        if (editorIsActive()) {
+          if (Number.isInteger(scrollToChapter)) {
+            const chapter = state.chapters[scrollToChapter - 1];
+            editorScrollTo(chapter?.start || 0);
+          } else {
+            editorSetScrollTop(scroll);
+          }
+          return;
+        }
         const manuscript = $('.manuscript');
-        if (manuscript && !editorIsActive()) manuscript.scrollTop = scrollEnd ? manuscript.scrollHeight : scroll;
+        if (manuscript) manuscript.scrollTop = scroll;
       });
     }
 
@@ -264,31 +277,6 @@ export function wireWorkspaceEvents() {
   $('#chapter-menu').addEventListener('click', (event) => {
     const item = event.target.closest('[data-chapter]');
     if (item) jumpToChapter(Number(item.dataset.chapter));
-  });
-
-  $('#prose').addEventListener('input', (event) => {
-    const review = state.aiReview;
-    if (!review) return;
-    const changes = reviewChangesSorted(review);
-
-    const textarea = event.target.closest?.('.ai-new-input');
-    if (textarea) {
-      const change = changes[Number(textarea.dataset.change)];
-      if (!change) return;
-      change.edited = textarea.value;
-      change.accepted = textarea.value.trim().length > 0;
-      growReviewEditor(textarea);
-      return;
-    }
-
-    const ins = event.target.closest?.('ins.ai-ins[contenteditable]');
-    if (ins) {
-      const change = changes[Number(ins.dataset.change)];
-      if (!change) return;
-      const text = ins.textContent || '';
-      change.edited = text;
-      change.accepted = text.trim().length > 0;
-    }
   });
 
   const manuscriptEl = $('.manuscript');

@@ -3,8 +3,10 @@ import { $ } from '../core/dom.js';
 import { getManuscriptTitle } from '../core/format.js';
 import { applyManuscriptText, flushSave, saveAll } from './persistence.js';
 import {
+  Compartment,
   EditorState,
   EditorView,
+  Transaction,
   drawSelection,
   dropCursor,
   history,
@@ -17,14 +19,39 @@ import {
 } from '../vendor/codemirror.js';
 import { livePreview, selectionPlainText, titleBlock } from './editor-live.js';
 import { tableBlocks } from './editor-tables.js';
+import { reviewFrameField, setReviewFrame } from './review-decorations.js';
 
 let view = null;
 let bookId = '';
 let docBom = '';
 let docEol = '\n';
 let syncing = false;
+let reviewActive = false;
 let scrollCallback = null;
 let scrollFrame = 0;
+let viewportRestoreFrame = 0;
+let scrollRestoreFrame = 0;
+let revealToken = 0;
+
+const previewCompartment = new Compartment();
+const reviewModeCompartment = new Compartment();
+const previewExtensions = [titleBlock, tableBlocks, livePreview];
+const editableExtensions = [
+  EditorView.editable.of(true),
+  EditorState.readOnly.of(false),
+];
+const reviewExtensions = [
+  EditorView.editable.of(false),
+  EditorState.readOnly.of(true),
+];
+
+function normalizeDocText(value) {
+  return String(value ?? '').replace(/\r\n?/g, '\n');
+}
+
+function clampPos(value, length) {
+  return Math.max(0, Math.min(length, Number(value) || 0));
+}
 
 const editorTheme = EditorView.theme({
   '&': {
@@ -61,7 +88,7 @@ function joinSource(text) {
 }
 
 function handleUpdate(update) {
-  if (!update.docChanged || syncing) return;
+  if (!update.docChanged || syncing || reviewActive) return;
   applyManuscriptText(joinSource(update.state.doc.toString()));
 }
 
@@ -74,7 +101,7 @@ function handleScroll() {
 }
 
 function saveNow() {
-  saveAll({ notify: true }).catch(() => {});
+  if (!reviewActive) saveAll({ notify: true }).catch(() => {});
   return true;
 }
 
@@ -83,7 +110,7 @@ export function mountEditor(prose, book, { onScroll = null } = {}) {
   scrollCallback = onScroll;
 
   if (view && bookId === book.meta.id) {
-    syncEditorSource(book.manuscript);
+    if (!reviewActive) syncEditorSource(book.manuscript);
     return view;
   }
 
@@ -111,13 +138,14 @@ export function mountEditor(prose, book, { onScroll = null } = {}) {
         dropCursor(),
         EditorView.lineWrapping,
         markdown({ base: markdownLanguage }),
-        titleBlock,
-        tableBlocks,
-        livePreview,
+        previewCompartment.of(previewExtensions),
+        reviewModeCompartment.of(editableExtensions),
+        reviewFrameField,
         editorTheme,
         EditorView.updateListener.of(handleUpdate),
         EditorView.domEventHandlers({
           blur(event, editor) {
+            if (reviewActive) return false;
             const next = event.relatedTarget;
             if (next && editor.dom.contains(next)) return false;
             flushSave().catch(() => {});
@@ -142,7 +170,7 @@ export function mountEditor(prose, book, { onScroll = null } = {}) {
 }
 
 export function syncEditorSource(value) {
-  if (!view) return false;
+  if (!view || reviewActive) return false;
   const parsed = splitSource(value);
   docBom = parsed.bom;
   docEol = parsed.eol;
@@ -156,12 +184,15 @@ export function syncEditorSource(value) {
     view.dispatch({
       changes: { from: 0, to: current.length, insert: parsed.text },
       selection: { anchor: head },
+      annotations: Transaction.addToHistory.of(false),
     });
     view.requestMeasure();
   } finally {
     syncing = false;
   }
-  requestAnimationFrame(() => {
+  cancelAnimationFrame(scrollRestoreFrame);
+  scrollRestoreFrame = requestAnimationFrame(() => {
+    scrollRestoreFrame = 0;
     if (view) view.scrollDOM.scrollTop = scrollTop;
   });
   return true;
@@ -170,6 +201,11 @@ export function syncEditorSource(value) {
 export function destroyEditor() {
   if (scrollFrame) cancelAnimationFrame(scrollFrame);
   scrollFrame = 0;
+  cancelAnimationFrame(viewportRestoreFrame);
+  viewportRestoreFrame = 0;
+  cancelAnimationFrame(scrollRestoreFrame);
+  scrollRestoreFrame = 0;
+  revealToken += 1;
   if (view) {
     try {
       view.destroy();
@@ -179,6 +215,7 @@ export function destroyEditor() {
     view = null;
   }
   bookId = '';
+  reviewActive = false;
   scrollCallback = null;
   $('#prose')?.classList.remove('prose-live');
   return true;
@@ -188,8 +225,169 @@ export function editorIsActive() {
   return Boolean(view && view.dom.isConnected);
 }
 
+export function editorReviewActive() {
+  return Boolean(view && reviewActive);
+}
+
+export function editorEnterReview() {
+  if (!view) return false;
+  if (reviewActive) return true;
+  cancelAnimationFrame(scrollRestoreFrame);
+  scrollRestoreFrame = 0;
+  cancelAnimationFrame(viewportRestoreFrame);
+  viewportRestoreFrame = 0;
+  reviewActive = true;
+  view.dispatch({
+    effects: [
+      reviewModeCompartment.reconfigure(reviewExtensions),
+      previewCompartment.reconfigure([]),
+    ],
+  });
+  return true;
+}
+
+export function editorExitReview() {
+  const active = reviewActive;
+  reviewActive = false;
+  revealToken += 1;
+  cancelAnimationFrame(scrollRestoreFrame);
+  scrollRestoreFrame = 0;
+  cancelAnimationFrame(viewportRestoreFrame);
+  viewportRestoreFrame = 0;
+  if (!view) return active;
+  view.dispatch({
+    effects: [
+      reviewModeCompartment.reconfigure(editableExtensions),
+      previewCompartment.reconfigure(previewExtensions),
+      setReviewFrame.of(null),
+    ],
+  });
+  view.requestMeasure();
+  return active;
+}
+
+export function editorApplyReview(frame, handlers, { text = null, selection = null } = {}) {
+  if (!view) return false;
+  revealToken += 1;
+  cancelAnimationFrame(scrollRestoreFrame);
+  scrollRestoreFrame = 0;
+  cancelAnimationFrame(viewportRestoreFrame);
+  viewportRestoreFrame = 0;
+  const current = view.state.doc.toString();
+  const next = text === null ? current : normalizeDocText(text);
+  const docChanged = current !== next;
+  const oldSelection = view.state.selection.main;
+  const nextLength = next.length;
+  const anchor = clampPos(selection?.anchor ?? oldSelection.anchor, nextLength);
+  const head = clampPos(selection?.head ?? oldSelection.head, nextLength);
+  const nextSelection = docChanged || selection ? { anchor, head } : undefined;
+
+  let scrollTop = 0;
+  let anchorPos = 0;
+  let viewportOffset = 0;
+  if (docChanged) {
+    scrollTop = view.scrollDOM.scrollTop;
+    const block = view.lineBlockAtHeight(scrollTop);
+    anchorPos = Math.min(block.from, nextLength);
+    viewportOffset = scrollTop - block.top;
+  }
+
+  syncing = true;
+  try {
+    view.dispatch({
+      changes: docChanged ? { from: 0, to: current.length, insert: next } : undefined,
+      selection: nextSelection,
+      annotations: Transaction.addToHistory.of(false),
+      effects: setReviewFrame.of({ frame, handlers }),
+    });
+  } finally {
+    syncing = false;
+  }
+
+  if (docChanged) {
+    cancelAnimationFrame(viewportRestoreFrame);
+    viewportRestoreFrame = requestAnimationFrame(() => {
+      viewportRestoreFrame = 0;
+      if (!view) return;
+      const block = view.lineBlockAt(Math.min(anchorPos, view.state.doc.length));
+      view.scrollDOM.scrollTop = Math.max(0, block.top + viewportOffset);
+    });
+  }
+  view.requestMeasure();
+  return true;
+}
+
+export function editorSetReviewFrame(frame, handlers) {
+  if (!view) return false;
+  view.dispatch({ effects: setReviewFrame.of({ frame, handlers }) });
+  view.requestMeasure();
+  return true;
+}
+
+export function editorRequestMeasure() {
+  if (!view) return false;
+  view.requestMeasure();
+  return true;
+}
+
+export function editorRevealReviewRange(from, { y = 'center' } = {}) {
+  if (!view) return false;
+  revealToken += 1;
+  cancelAnimationFrame(viewportRestoreFrame);
+  viewportRestoreFrame = 0;
+  const pos = clampPos(from, view.state.doc.length);
+  view.dispatch({
+    effects: EditorView.scrollIntoView(pos, { y, yMargin: 16 }),
+  });
+  return true;
+}
+
+export function editorRevealReviewAnchor(anchor = 'pending', version = null) {
+  if (!view) return false;
+  const token = ++revealToken;
+  cancelAnimationFrame(viewportRestoreFrame);
+  viewportRestoreFrame = 0;
+  const reveal = () => {
+    if (!view) return false;
+    const elements = [...view.dom.querySelectorAll(`[data-review-anchor="${anchor}"]`)];
+    const element = version === null
+      ? elements.at(-1)
+      : elements.find((item) => item.dataset.reviewVersion === String(version));
+    if (!element) return false;
+    const host = view.scrollDOM;
+    const hostRect = host.getBoundingClientRect();
+    const rect = element.getBoundingClientRect();
+    const sticky = document.querySelector('.ms-sticky')?.getBoundingClientRect().height || 0;
+    const top = host.scrollTop + rect.top - hostRect.top - sticky - 10;
+    host.scrollTop = Math.max(0, top);
+    return true;
+  };
+
+  view.requestMeasure();
+  if (reveal()) return true;
+
+  let attempts = 0;
+  const revealAtEnd = () => {
+    if (!view || token !== revealToken) return;
+    if (reveal()) return;
+    attempts += 1;
+    if (attempts > 10) return;
+    view.scrollDOM.scrollTop = view.scrollDOM.scrollHeight;
+    view.requestMeasure();
+    requestAnimationFrame(revealAtEnd);
+  };
+  requestAnimationFrame(revealAtEnd);
+  return true;
+}
+
 export function editorDocText() {
   return view ? view.state.doc.toString() : '';
+}
+
+export function editorSelectionRange() {
+  if (!view) return null;
+  const selection = view.state.selection.main;
+  return { from: selection.from, to: selection.to, head: selection.head };
 }
 
 export function editorSelection() {
@@ -249,6 +447,12 @@ export function editorScrollTop() {
   return view?.scrollDOM.scrollTop || 0;
 }
 
+export function editorSetScrollTop(value) {
+  if (!view) return false;
+  view.scrollDOM.scrollTop = Math.max(0, Number(value) || 0);
+  return true;
+}
+
 export function editorScroller() {
   return view?.scrollDOM || null;
 }
@@ -257,6 +461,20 @@ export function editorLineTop(offset) {
   if (!view) return 0;
   const pos = Math.max(0, Math.min(view.state.doc.length, Number(offset) || 0));
   return view.lineBlockAt(pos).top;
+}
+
+export function editorLineSpan(from, to) {
+  if (!view) return null;
+  const length = view.state.doc.length;
+  const start = clampPos(from, length);
+  const end = clampPos(Math.max(start, Number(to) || 0), length);
+  const first = view.lineBlockAt(start);
+  const last = view.lineBlockAt(end > start ? end - 1 : end);
+  return {
+    top: first.top,
+    height: Math.max(0, last.top + last.height - first.top),
+    scrollHeight: view.scrollDOM.scrollHeight,
+  };
 }
 
 export function editorAtBottom() {

@@ -1,6 +1,12 @@
 import { state } from '../core/state.js';
 import { $ } from '../core/dom.js';
-import { editorIsActive, editorScroller } from './editor.js';
+import { buildReviewFrame } from '../core/review-frame.js';
+import {
+  editorIsActive,
+  editorLineSpan,
+  editorReviewActive,
+  editorScroller,
+} from './editor.js';
 
 function scrollHost() {
   if (editorIsActive()) {
@@ -122,6 +128,50 @@ function layoutRulerThumb() {
   thumb.setAttribute('aria-valuenow', String(Math.round((host.scrollTop / maxScroll) * 100)));
 }
 
+function renderEditorReviewMarks(marks, ruler, host) {
+  const frame = buildReviewFrame(state.aiReview);
+  if (!frame || !host) return;
+  const rulerHeight = ruler.clientHeight;
+  const scrollHeight = host.scrollHeight;
+  if (!rulerHeight || !scrollHeight) return;
+
+  const place = (from, to, kind, label) => {
+    const span = editorLineSpan(from, to);
+    if (!span) return;
+    const rawTop = (span.top / scrollHeight) * rulerHeight;
+    const rawHeight = (Math.max(span.height, 1) / scrollHeight) * rulerHeight;
+    const height = Math.max(3, rawHeight);
+    let top = rawTop;
+    if (height > rawHeight) top -= (height - rawHeight) / 2;
+    top = Math.max(0, Math.min(rulerHeight - height, top));
+
+    const mark = document.createElement('button');
+    mark.type = 'button';
+    mark.className = 'diff-ruler-mark';
+    mark.dataset.kind = kind;
+    mark.dataset.scroll = String(Math.round(span.top));
+    mark.title = label;
+    mark.setAttribute('aria-label', label);
+    mark.style.top = `${Math.round(top)}px`;
+    mark.style.height = `${Math.round(height)}px`;
+    marks.appendChild(mark);
+  };
+
+  for (const change of frame.changes) {
+    const kind = change.editable
+      ? (!change.new ? 'red' : (!change.old ? 'green' : 'blue'))
+      : 'blue';
+    const label = kind === 'red' ? '删除' : kind === 'green' ? '新增' : '修改';
+    place(change.start, change.end, kind, label);
+  }
+  for (const quote of frame.pendingQuotes) {
+    place(quote.from, quote.to, 'pending', '待标记引文');
+  }
+  if (frame.pendingChapter) {
+    place(frame.length, frame.length, 'pending', '待确认新章');
+  }
+}
+
 function renderRuler() {
   const wrap = document.querySelector('.ms-wrap');
   const ruler = $('#diff-ruler');
@@ -131,6 +181,9 @@ function renderRuler() {
   syncRulerBox(ruler, wrap);
   marks.innerHTML = '';
   if (editorIsActive()) {
+    if (editorReviewActive() && state.aiReview) {
+      renderEditorReviewMarks(marks, ruler, editorScroller());
+    }
     layoutRulerThumb();
     return;
   }

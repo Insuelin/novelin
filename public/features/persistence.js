@@ -21,6 +21,10 @@ export function startTitleEdit() {
   const heading = $('#ms-title');
   const input = $('#ms-title-input');
   if (!book || !heading || !input || state.titleEditing) return;
+  if (state.aiReview) {
+    toast('AI 预览中，先处理完再改书名', 'info');
+    return;
+  }
 
   state.titleEditing = true;
   input.value = getManuscriptTitle(book.manuscript)?.title || book.meta.title || '';

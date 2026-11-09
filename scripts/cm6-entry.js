@@ -1,6 +1,9 @@
 export {
   EditorState,
   StateField,
+  StateEffect,
+  Compartment,
+  Transaction,
 } from '@codemirror/state';
 
 export {

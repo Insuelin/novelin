@@ -5,7 +5,7 @@ import { API, api, streamAiResponse } from '../core/api.js';
 import { aiLog, setAiState } from '../core/logger.js';
 import { toast } from '../ui/toast.js';
 import { ensureModelCatalog, queueMetaPatch, renderAgentSettings, updateAiControls } from './ai-controls.js';
-import { markPendingSelection, markReviewPending } from './pending-marks.js';
+import { editorSelection } from './editor.js';
 import { startReview, clearReview, applyPreviewOp, openProposalReview, buildReviewDecisions, scheduleDraftRender } from './ai-review.js';
 import { updateReviewBar } from './review-view.js';
 import { markSummaryPending, startAppendedSummaries } from './summaries.js';
@@ -245,16 +245,25 @@ export async function runAi({ action = 'chapter', useSelection = false, plotItem
   }
 
   const context = state.selectionContext;
+  const liveSelection = useSelection ? editorSelection() : null;
   const selection = useSelection
-    ? (state.selectionText && context
+    ? (liveSelection
       ? {
-        text: state.selectionText.slice(0, 8000),
-        before: String(context.before || '').slice(-1000),
-        after: String(context.after || '').slice(0, 1000),
-        chapter: String(context.chapter || '').slice(0, 200),
-        truncated: Boolean(context.truncated),
+        text: liveSelection.text.slice(0, 8000),
+        before: String(liveSelection.before || '').slice(-1000),
+        after: String(liveSelection.after || '').slice(0, 1000),
+        chapter: String(liveSelection.chapter || '').slice(0, 200),
+        truncated: Boolean(liveSelection.truncated),
       }
-      : (state.selectionText ? { text: state.selectionText.slice(0, 8000) } : null))
+      : (state.selectionText && context
+        ? {
+          text: state.selectionText.slice(0, 8000),
+          before: String(context.before || '').slice(-1000),
+          after: String(context.after || '').slice(0, 1000),
+          chapter: String(context.chapter || '').slice(0, 200),
+          truncated: Boolean(context.truncated),
+        }
+        : (state.selectionText ? { text: state.selectionText.slice(0, 8000) } : null)))
     : null;
   if (useSelection && !selection) {
     toast('先在正文里选中一段', 'error');
@@ -278,23 +287,27 @@ export async function runAi({ action = 'chapter', useSelection = false, plotItem
   const model = book.meta.model || '';
   const controller = new AbortController();
   let written = false;
-  let appendedWritten = false;
+  let appendedIndex = null;
   let hadError = false;
   let noticedNoChange = false;
 
   state.aiRunning = true;
   state.aiAbort = controller;
   const selectionWords = useSelection ? countWords(selection?.text || '') : 0;
-  const preserveSelection = action === 'revise' && useSelection
-    ? markPendingSelection()
-    : false;
   const pendingQuotes = action === 'plot'
     ? plotItems.map((item) => String(item?.quote || '')).filter(Boolean)
-    : (preserveSelection && selection ? [selection.text] : []);
+    : [];
   const livePreview = mode === 'diff' || action === 'chapter' || action === 'revise' || action === 'plot';
-  if (livePreview) startReview(action, { selectionWords, preserveSelection, pendingQuotes, mode });
-  else clearReview({ render: false });
-  if (action === 'plot') markReviewPending({ scroll: true });
+  if (livePreview) {
+    startReview(action, {
+      selectionWords,
+      pendingQuotes,
+      mode,
+      selection: liveSelection ? { from: liveSelection.from, to: liveSelection.to } : null,
+    });
+  } else {
+    clearReview({ render: false });
+  }
   setAiState('RUNNING', 'running');
   updateAiControls();
 
@@ -322,7 +335,9 @@ export async function runAi({ action = 'chapter', useSelection = false, plotItem
       if (state.current?.meta.id !== bookId) return;
       if (type === 'written') {
         written = true;
-        if (Array.isArray(payload.appended) && payload.appended.length) appendedWritten = true;
+        if (Array.isArray(payload.appended) && payload.appended.length) {
+          appendedIndex = Number(payload.appended[0]?.index) || null;
+        }
       }
       if (type === 'error') hadError = true;
       if (type === 'notice' && /不需要修改/.test(String(payload.message || ''))) {
@@ -336,7 +351,7 @@ export async function runAi({ action = 'chapter', useSelection = false, plotItem
     if (written) {
       aiLog('OK', '正文已更新，正在刷新', 'ok');
       clearReview({ render: false });
-      await bus.emit('book:refresh', { scrollEnd: action === 'chapter' || appendedWritten });
+      await bus.emit('book:refresh', { scrollToChapter: appendedIndex });
     }
     if (!state.aiProposal && !hadError) {
       if (state.aiReview) {
@@ -392,13 +407,10 @@ export async function respondProposal(action) {
       if (appended.length) markSummaryPending(bookId, appended);
       aiLog('OK', '提案已写入', 'ok');
       toast('已写入正文', 'success');
-      const scrollEnd = (proposal.ops || []).some((op) => op.type === 'append_chapter')
-        || (Array.isArray(result.changed) && result.changed.includes('manuscript'));
-      state.aiReview = null;
-      state.aiProposal = null;
-      updateReviewBar();
+      const scrollToChapter = appended.length ? Number(appended[0]?.index) || null : null;
+      clearReview({ render: false });
       setAiState('DONE', 'done');
-      await bus.emit('book:refresh', { scrollEnd });
+      await bus.emit('book:refresh', { scrollToChapter });
       if (appended.length) startAppendedSummaries(bookId, appended);
     } else {
       aiLog('SYS', '提案已拒绝');

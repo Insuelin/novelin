@@ -163,7 +163,7 @@ export function createApp({ dataDir, aiClient } = {}) {
     }
 
     const settings = normalizeAgentSettings(book.meta);
-    const finalInstruction = instruction || '写下一章，承接前文。';
+    const finalInstruction = action === 'chapter' ? '写下一章，承接前文。' : instruction;
 
     res.status(200);
     res.set({
@@ -223,6 +223,9 @@ export function createApp({ dataDir, aiClient } = {}) {
         written: result.written,
         proposalId: result.proposal?.id || null,
         chapterTitle: result.chapterTitle,
+        message: action === 'chat' && !result.proposal && !result.written
+          ? String(result.finalText || '').slice(0, 4000)
+          : '',
       });
     } catch (err) {
       if (controller.signal.aborted) return;
@@ -401,6 +404,15 @@ export function createApp({ dataDir, aiClient } = {}) {
       if (!query) return res.status(400).json({ error: 'query 不能为空' });
       if (query.length > 2000) return res.status(400).json({ error: 'query 太长' });
 
+      const chapters = Array.isArray(req.body?.chapters)
+        ? [...new Set(
+          req.body.chapters
+            .map((index) => Number(index))
+            .filter((index) => Number.isInteger(index) && index > 0),
+        )].sort((a, b) => a - b)
+        : [];
+      if (chapters.length > 1000) return res.status(400).json({ error: '章节选择太多' });
+
       const book = await store.getBook(req.params.id);
       if (!book) return res.status(404).json({ error: '书籍不存在' });
       if (!book.manuscript.trim()) return res.status(400).json({ error: '正文还是空的' });
@@ -428,6 +440,7 @@ export function createApp({ dataDir, aiClient } = {}) {
             book,
             state,
             question: query,
+            chapters,
             signal: controller.signal,
           });
         } catch (err) {
@@ -444,6 +457,7 @@ export function createApp({ dataDir, aiClient } = {}) {
             scanned: result.scanned,
             failedChunks: result.failedChunks,
             timedOut: result.timedOut,
+            chapters: result.chapters || chapters,
           });
         }
         return res.json({
@@ -454,6 +468,7 @@ export function createApp({ dataDir, aiClient } = {}) {
           scanned: result.scanned,
           failedChunks: result.failedChunks,
           timedOut: result.timedOut,
+          chapters: result.chapters || chapters,
         });
       } finally {
         res.off('close', onClose);

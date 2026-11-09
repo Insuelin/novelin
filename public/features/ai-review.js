@@ -3,7 +3,7 @@ import { $ } from '../core/dom.js';
 import { marked, sanitizeHtml, renderBlockMath, renderMath } from '../core/markdown.js';
 import { setAiState } from '../core/logger.js';
 import { isNearBottom, scrollManuscriptToEnd, scrollToPendingChapter, scrollToReviewChange } from '../ui/layout.js';
-import { renderProse, hideSelection, setManuscriptMode } from './manuscript.js';
+import { renderProse, hideSelection } from './manuscript.js';
 import { reviewChangesSorted, updateReviewBar } from './review-view.js';
 import { scheduleRulerRender } from './diff-ruler.js';
 import { updateAiControls } from './ai-controls.js';
@@ -32,7 +32,6 @@ export function startReview(action, { selectionWords = 0, preserveSelection = fa
   };
   state.aiProposal = null;
 
-  if (state.manuscriptMode === 'edit') setManuscriptMode('read');
   hideSelection();
   updateReviewBar();
   if (!preserveSelection) renderProse();
@@ -150,7 +149,6 @@ export function openProposalReview(proposal) {
   }
 
   state.aiReview = review;
-  if (state.manuscriptMode === 'edit') setManuscriptMode('read');
   updateReviewBar();
   renderProse();
   if (review.draftFinal) scrollToPendingChapter();
@@ -159,7 +157,7 @@ export function openProposalReview(proposal) {
   updateAiControls();
 }
 
-function scheduleDraftRender() {
+export function scheduleDraftRender() {
   if (state.aiDraftTimer) return;
   state.aiDraftTimer = setTimeout(() => {
     state.aiDraftTimer = null;

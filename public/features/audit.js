@@ -1,9 +1,13 @@
 import { state } from '../core/state.js';
 import { $, $$, escapeHtml, setDisabled, setHidden } from '../core/dom.js';
 import { pad2 } from '../core/format.js';
-import { API } from '../core/api.js';
+import { API, api } from '../core/api.js';
 import { bus } from '../core/bus.js';
 import { toast } from '../ui/toast.js';
+
+let auditChapters = [];
+let auditScopeToken = 0;
+let auditScopeLoading = false;
 
 export function updateAuditRewriteState() {
   const checked = $$('#audit-list [data-audit-index]').filter((input) => input.checked).length;
@@ -29,6 +33,88 @@ function renderAuditIssues() {
   updateAuditRewriteState();
 }
 
+function selectedAuditChapters() {
+  return $$('#audit-chapters [data-audit-chapter]')
+    .filter((input) => input.checked)
+    .map((input) => Number(input.dataset.auditChapter));
+}
+
+function auditScopeLabel(indexes = selectedAuditChapters()) {
+  if (!auditChapters.length) return '全书';
+  if (!indexes.length) return '未选章节';
+  if (indexes.length === auditChapters.length) return '全部章节';
+  const shown = indexes.slice(0, 4).map((index) => `第 ${index} 章`).join('、');
+  return indexes.length > 4 ? `${shown} 等 ${indexes.length} 章` : shown;
+}
+
+export function updateAuditScopeState() {
+  const selected = selectedAuditChapters();
+  const busy = Boolean(state.auditAbort) || auditScopeLoading;
+  const count = $('#audit-scope-count');
+  if (count) {
+    count.textContent = auditScopeLoading
+      ? '加载中…'
+      : auditChapters.length
+        ? `已选 ${selected.length} / ${auditChapters.length} 章`
+        : '全书';
+  }
+  setDisabled($('#audit-scan'), busy || (auditChapters.length > 0 && selected.length === 0));
+  setDisabled($('#audit-scope-all'), busy || !auditChapters.length);
+  setDisabled($('#audit-scope-none'), busy || !auditChapters.length);
+  $$('#audit-chapters input').forEach((input) => {
+    input.disabled = busy;
+  });
+}
+
+function renderAuditChapters() {
+  const wrap = $('#audit-chapters');
+  if (!wrap) return;
+  if (!auditChapters.length) {
+    wrap.innerHTML = '<span class="audit-scope-empty">整本正文</span>';
+    updateAuditScopeState();
+    return;
+  }
+  wrap.innerHTML = auditChapters.map((chapter) => {
+    const title = escapeHtml(chapter.title || `第 ${chapter.index} 章`);
+    return `<label class="audit-chapter" title="${title}"><input type="checkbox" data-audit-chapter="${chapter.index}" checked><span>${pad2(chapter.index)}</span></label>`;
+  }).join('');
+  updateAuditScopeState();
+}
+
+async function loadAuditChapters(bookId) {
+  const token = ++auditScopeToken;
+  auditChapters = [];
+  auditScopeLoading = true;
+  renderAuditChapters();
+  try {
+    const data = await api(`/books/${encodeURIComponent(bookId)}/chapters`);
+    if (token !== auditScopeToken || state.auditBookId !== bookId) return;
+    auditChapters = Array.isArray(data.chapters) ? data.chapters : [];
+  } catch {
+    if (token !== auditScopeToken || state.auditBookId !== bookId) return;
+    auditChapters = [];
+  } finally {
+    if (token === auditScopeToken && state.auditBookId === bookId) {
+      auditScopeLoading = false;
+      renderAuditChapters();
+    }
+  }
+}
+
+export function selectAllAuditChapters() {
+  $$('#audit-chapters [data-audit-chapter]').forEach((input) => {
+    input.checked = true;
+  });
+  updateAuditScopeState();
+}
+
+export function clearAuditChapters() {
+  $$('#audit-chapters [data-audit-chapter]').forEach((input) => {
+    input.checked = false;
+  });
+  updateAuditScopeState();
+}
+
 export function openAuditDialog() {
   const book = state.current;
   const dialog = $('#audit-dialog');
@@ -49,10 +135,10 @@ export function openAuditDialog() {
   const list = $('#audit-list');
   if (list) list.innerHTML = '';
   const hint = $('#audit-hint');
-  if (hint) hint.textContent = '先写审查要求，再扫描。审查会按块扫描全书，只读，不改正文。';
+  if (hint) hint.textContent = '先写审查要求，再扫描。默认扫描全书，也可以只选几章。';
   setHidden($('#audit-stop'), true);
-  setDisabled($('#audit-scan'), false);
   updateAuditRewriteState();
+  loadAuditChapters(book.meta.id);
 
   if (!dialog.open) dialog.showModal();
   query?.focus();
@@ -67,6 +153,18 @@ export async function scanPlotIssues() {
     toast('先写审查要求', 'error');
     return;
   }
+  if (auditScopeLoading) {
+    toast('章节还在加载', 'error');
+    return;
+  }
+
+  const selected = selectedAuditChapters();
+  if (auditChapters.length && !selected.length) {
+    toast('至少选一章', 'error');
+    return;
+  }
+  const scope = auditChapters.length && selected.length < auditChapters.length ? selected : null;
+  const scopeLabel = auditScopeLabel(selected);
 
   state.auditAbort?.abort();
   const controller = new AbortController();
@@ -78,16 +176,16 @@ export async function scanPlotIssues() {
   updateAuditRewriteState();
 
   const hint = $('#audit-hint');
-  if (hint) hint.textContent = '扫描中…按块并发，最多约 3 分钟，点停止可以中断。';
+  if (hint) hint.textContent = `扫描中…${scopeLabel}，按块并发，最多约 3 分钟，点停止可以中断。`;
   setHidden($('#audit-stop'), false);
-  setDisabled($('#audit-scan'), true);
+  updateAuditScopeState();
   updateAuditRewriteState();
 
   try {
     const response = await fetch(`${API}/books/${encodeURIComponent(book.meta.id)}/audit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, ...(scope ? { chapters: scope } : {}) }),
       signal: controller.signal,
     });
     const data = await response.json().catch(() => ({}));
@@ -108,8 +206,8 @@ export async function scanPlotIssues() {
       if (failedChunks) parts.push(`${failedChunks} 块审查失败`);
       if (dropped) parts.push(`${dropped} 条引文被丢弃`);
       hint.textContent = parts.length
-        ? `${parts.join('；')}。${state.auditIssues.length ? '勾选后改写。' : ''}`
-        : '没找到需要改的段落。';
+        ? `${scopeLabel} · ${parts.join('；')}。${state.auditIssues.length ? '勾选后改写。' : ''}`
+        : `${scopeLabel} · 没找到需要改的段落。`;
     }
   } catch (err) {
     if (err.name === 'AbortError' || controller.signal.aborted) {
@@ -121,7 +219,7 @@ export async function scanPlotIssues() {
   } finally {
     if (state.auditAbort === controller) state.auditAbort = null;
     setHidden($('#audit-stop'), true);
-    setDisabled($('#audit-scan'), false);
+    updateAuditScopeState();
     updateAuditRewriteState();
   }
 }

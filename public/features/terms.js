@@ -105,7 +105,7 @@ export async function previewTermClean() {
 export async function applyTermClean() {
   const book = state.current;
   if (!book) return;
-  if (state.aiRunning || state.aiProposal?.status === 'pending' || state.summaryBusy) {
+  if (state.aiRunning || state.aiProposal?.status === 'pending' || state.summaryBusy || state.blockEdit) {
     toast('还有任务在跑，等它结束再替换', 'error');
     return;
   }

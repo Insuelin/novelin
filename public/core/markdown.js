@@ -1,38 +1,14 @@
-import { marked } from '../vendor/marked.esm.js';
+import { marked } from './marked.js';
 import DOMPurify from '../vendor/purify.es.js';
 import katex from '/vendor/katex/katex.mjs';
 import renderMathInElement from '/vendor/katex/contrib/auto-render.mjs';
-import { escapeHtml } from './dom.js';
 
-const MATH_BLOCK_RE = /^(?:\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\])[ \t]*(?:\n|$)/;
 const MATH_DELIMITERS = [
   { left: '$$', right: '$$', display: true },
   { left: '\\[', right: '\\]', display: true },
   { left: '\\(', right: '\\)', display: false },
   { left: '$', right: '$', display: false },
 ];
-
-marked.use({
-  extensions: [{
-    name: 'mathBlock',
-    level: 'block',
-    start(src) {
-      return src.search(/\$\$|\\\[/);
-    },
-    tokenizer(src) {
-      const match = MATH_BLOCK_RE.exec(src);
-      if (!match) return undefined;
-      return {
-        type: 'mathBlock',
-        raw: match[0],
-        text: (match[1] ?? match[2] ?? '').trim(),
-      };
-    },
-    renderer(token) {
-      return `<div class="math-block" data-tex="${escapeHtml(token.text)}"></div>\n`;
-    },
-  }],
-});
 
 export { marked };
 

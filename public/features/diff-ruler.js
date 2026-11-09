@@ -176,7 +176,7 @@ export function setRulerEnabled() {
   const ruler = $('#diff-ruler');
   if (!wrap || !ruler) return;
   const singleColumn = window.matchMedia('(max-width: 1080px)').matches;
-  const enabled = Boolean(state.current) && state.manuscriptMode === 'read' && !singleColumn;
+  const enabled = Boolean(state.current) && !singleColumn;
   wrap.classList.toggle('ruler-on', enabled);
   ruler.hidden = !enabled;
   if (enabled) {

@@ -185,14 +185,10 @@
             <div class="ms-meta"><span id="ms-words">0 字</span><br><span id="ms-mode-label">READ</span></div>
           </div>
           <div class="ms-toolbar">
-            <div class="segmented small" id="ms-mode">
-              <button class="on" type="button" data-ms-mode="read">READ</button>
-              <button type="button" data-ms-mode="edit">EDIT</button>
-            </div>
-            <button class="btn ghost small" id="save-manuscript" type="button" hidden>SAVE</button>
+            <button class="btn ghost small" id="source-btn" type="button">源码 / SOURCE</button>
             <button class="btn ghost small" id="terms-btn" type="button">用词 / TERMS</button>
             <button class="btn ghost small" id="audit-btn" type="button">情节审查 / AUDIT</button>
-            <span class="hint">Ctrl+S 保存 · 选中正文可准备改写</span>
+            <span class="hint">双击段落编辑 · 拖选可 AI 改写 · Ctrl+S 保存</span>
           </div>
           <div class="review-bar" id="review-bar" hidden>
             <div class="review-state">
@@ -207,7 +203,7 @@
           </div>
           </div>
           <article id="prose" class="prose"></article>
-          <textarea id="manuscript-editor" class="manuscript-editor" hidden spellcheck="false" placeholder="从这里开始写，或者让 AI 写下一章。"></textarea>
+          <div class="prose-tail" id="prose-tail" data-block-append><span>双击这里继续写</span></div>
           <div class="selection-note" id="selection-note" hidden>
             <span id="selection-info">SELECTED · 0 字</span>
             <div class="acts"><button class="text-btn" id="selection-revise" type="button">AI 改写选中</button></div>
@@ -267,14 +263,15 @@
         </div>
         <div class="agent-composer">
           <label class="field-label" for="ai-instruction">INSTRUCTION / 指令</label>
-          <textarea id="ai-instruction" class="agent-input" rows="3" placeholder="想让 AI 做什么？例如：写下一章，承接前文。"></textarea>
+          <textarea id="ai-instruction" class="agent-input" rows="3" placeholder="描述要改什么或查什么。例如：读第 3 章，把雨夜那段改得更冷。"></textarea>
           <div class="agent-actions">
             <span class="agent-note" id="ai-note">READY</span>
             <button class="btn danger small" type="button" id="ai-stop" hidden>STOP</button>
           </div>
           <div class="quick">
-            <button class="btn wide" type="button" id="ai-next">写下一章 / NEXT</button>
-            <button class="btn ghost wide" type="button" id="ai-revise" disabled>改写选中</button>
+            <button class="btn wide" type="button" id="ai-run">执行指令 / RUN</button>
+            <button class="btn ghost" type="button" id="ai-next">写下一章</button>
+            <button class="btn ghost" type="button" id="ai-revise" disabled>改写选中</button>
           </div>
         </div>
       </aside>
@@ -434,6 +431,25 @@
   </div>
 </dialog>
 
+<dialog id="source-dialog" class="modal modal-wide source-dialog">
+  <div class="modal-frame">
+    <div class="modal-head">
+      <div>
+        <div class="eyebrow">/// SOURCE / 全文源码</div>
+        <h2>编辑 Markdown</h2>
+      </div>
+      <button class="icon-btn" type="button" data-close-dialog="source-dialog" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <textarea id="manuscript-editor" class="manuscript-editor" spellcheck="false" placeholder="从这里开始写，或者让 AI 写下一章。"></textarea>
+    </div>
+    <div class="modal-actions">
+      <span class="modal-hint">直接编辑会立即保存，关闭后回到阅读视图。</span>
+      <button class="btn small" type="button" id="source-save">保存 / SAVE</button>
+    </div>
+  </div>
+</dialog>
+
 <dialog id="audit-dialog" class="modal modal-wide">
   <div class="modal-frame">
     <div class="modal-head">
@@ -446,6 +462,15 @@
     <div class="modal-body">
       <label class="field-label" for="audit-query">CRITIQUE / 审查要求</label>
       <textarea class="textarea audit-query" id="audit-query" rows="4" placeholder="例如：高中不可能上高等数学；日本高中不会让学生在学校拿电脑改代码。"></textarea>
+      <div class="audit-scope">
+        <div class="audit-scope-head">
+          <span class="field-label">SCOPE / 范围</span>
+          <span class="audit-scope-count" id="audit-scope-count">加载章节…</span>
+          <button class="btn ghost small" type="button" id="audit-scope-all">全选</button>
+          <button class="btn ghost small" type="button" id="audit-scope-none">清空</button>
+        </div>
+        <div class="audit-chapters" id="audit-chapters"></div>
+      </div>
       <div class="audit-actions">
         <button class="btn ghost small" type="button" id="audit-scan">扫描</button>
         <button class="btn danger small" type="button" id="audit-stop" hidden>停止</button>

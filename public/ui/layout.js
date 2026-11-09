@@ -1,15 +1,4 @@
-import { state } from '../core/state.js';
 import { $, $$ } from '../core/dom.js';
-
-export function syncEditorHeight() {
-  const editor = $('#manuscript-editor');
-  const manuscript = $('.manuscript');
-  if (!editor || !manuscript || state.manuscriptMode !== 'edit') return;
-  const stickyHeight = $('.ms-sticky')?.getBoundingClientRect().height || 0;
-  const height = Math.max(260, Math.round(manuscript.clientHeight - stickyHeight - 1));
-  editor.style.height = `${height}px`;
-  editor.style.minHeight = `${height}px`;
-}
 
 export function syncStickyHeight() {
   const sticky = $('.ms-sticky');
@@ -17,7 +6,6 @@ export function syncStickyHeight() {
   if (!sticky || !chrome) return;
   const height = Math.max(0, Math.round(sticky.getBoundingClientRect().height));
   chrome.style.setProperty('--ms-sticky-h', `${height}px`);
-  if (state.manuscriptMode === 'edit') syncEditorHeight();
 }
 
 export function isNearBottom(element, distance = 180) {

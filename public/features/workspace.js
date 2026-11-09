@@ -1,10 +1,10 @@
 import { state } from '../core/state.js';
 import { $, $$ } from '../core/dom.js';
 import { bus } from '../core/bus.js';
-import { countWords, getManuscriptTitle, countChapters, formatNumber } from '../core/format.js';
+import { getManuscriptTitle, formatNumber } from '../core/format.js';
 import { api } from '../core/api.js';
 import { toast, setSaveState } from '../ui/toast.js';
-import { syncStickyHeight, syncEditorHeight } from '../ui/layout.js';
+import { syncStickyHeight } from '../ui/layout.js';
 import { setMaxTokens, setMaxSteps, setReasoningEffort, openModelDialog, selectModel } from './ai-controls.js';
 import { wireDiffRuler } from './diff-ruler.js';
 import { growReviewEditor, reviewChangesSorted } from './review-view.js';
@@ -21,18 +21,27 @@ import {
   flushSummaryTimers,
 } from './summaries.js';
 import { openTermsDialog, previewTermClean, applyTermClean, removeSavedTerm } from './terms.js';
-import { updateAuditRewriteState, openAuditDialog, scanPlotIssues, stopAuditScan, rewriteAuditItems } from './audit.js';
+import {
+  updateAuditRewriteState,
+  updateAuditScopeState,
+  selectAllAuditChapters,
+  clearAuditChapters,
+  openAuditDialog,
+  scanPlotIssues,
+  stopAuditScan,
+  rewriteAuditItems,
+} from './audit.js';
 import {
   openChapterMenu,
   closeChapterMenu,
   jumpToChapter,
   updateChapterFromScroll,
-  updateChapterFromCursor,
-  scheduleChapterRefresh,
-  setManuscriptMode,
+  renderProse,
   hideSelection,
 } from './manuscript.js';
 import { clearReview } from './ai-review.js';
+import { wireBlockEditorEvents } from './block-editor.js';
+import { wireSourceDialog } from './source-dialog.js';
 import { renderAgent, setAiMode, runAi, stopAi, respondProposal } from './ai-agent.js';
 import { updateBookSummary } from './library.js';
 import { updateTitleDisplay, startTitleEdit, stopTitleEdit, commitTitleEdit, markDirty, saveAll } from './persistence.js';
@@ -120,12 +129,12 @@ export function renderWorkspace() {
   $('#theme-editor').value = book.meta.theme || '';
   $('#outline-editor').value = book.outline || '';
   $('#notes-editor').value = book.notes || '';
-  $('#manuscript-editor').value = book.manuscript || '';
   $('#ai-model-label').textContent = book.meta.model || '—';
 
   setSaveState('SAVED', 'ok');
+  $('#ms-mode-label').textContent = 'READ';
   activateTab('theme');
-  setManuscriptMode('read');
+  renderProse();
   hideSelection();
   renderAgent();
   applyPendingSearch();
@@ -137,7 +146,6 @@ export async function refreshBookAfterAi({ scrollEnd = false } = {}) {
   if (!book) return;
 
   const bookId = book.meta.id;
-  const mode = state.manuscriptMode;
   const tab = $('#briefing-tabs button.on')?.dataset.tab || 'theme';
   const scroll = $('.manuscript')?.scrollTop || 0;
 
@@ -150,14 +158,9 @@ export async function refreshBookAfterAi({ scrollEnd = false } = {}) {
     if (state.view === 'workspace') {
       renderWorkspace();
       activateTab(tab);
-      if (mode === 'edit') setManuscriptMode('edit');
       requestAnimationFrame(() => {
         const manuscript = $('.manuscript');
         if (manuscript) manuscript.scrollTop = scrollEnd ? manuscript.scrollHeight : scroll;
-        if (scrollEnd && state.manuscriptMode === 'edit') {
-          const editor = $('#manuscript-editor');
-          if (editor) editor.scrollTop = editor.scrollHeight;
-        }
       });
     }
 
@@ -226,15 +229,12 @@ export function flushBriefingDialog() {
 /* ---------- events ---------- */
 export function wireWorkspaceEvents() {
   bus.on('book:refresh', (payload = {}) => refreshBookAfterAi(payload));
+  wireBlockEditorEvents();
+  wireSourceDialog();
 
   $('#briefing-tabs').addEventListener('click', (event) => {
     const button = event.target.closest('[data-tab]');
     if (button) activateTab(button.dataset.tab);
-  });
-
-  $('#ms-mode').addEventListener('click', (event) => {
-    const button = event.target.closest('[data-ms-mode]');
-    if (button) setManuscriptMode(button.dataset.msMode, { preservePosition: true });
   });
 
   $('#ms-title').addEventListener('click', startTitleEdit);
@@ -302,15 +302,11 @@ export function wireWorkspaceEvents() {
     });
   }, { passive: true });
 
-  ['click', 'keyup', 'select'].forEach((eventName) => {
-    $('#manuscript-editor').addEventListener(eventName, updateChapterFromCursor);
-  });
   wireDiffRuler();
 
   window.addEventListener('resize', () => {
     requestAnimationFrame(() => {
       syncStickyHeight();
-      syncEditorHeight();
       updateChapterFromScroll();
     });
   });
@@ -448,6 +444,9 @@ export function wireWorkspaceEvents() {
   });
 
   $('#audit-btn')?.addEventListener('click', openAuditDialog);
+  $('#audit-chapters')?.addEventListener('change', updateAuditScopeState);
+  $('#audit-scope-all')?.addEventListener('click', selectAllAuditChapters);
+  $('#audit-scope-none')?.addEventListener('click', clearAuditChapters);
   $('#audit-scan')?.addEventListener('click', () => {
     scanPlotIssues().catch((err) => toast(err.message || '审查失败', 'error'));
   });
@@ -462,8 +461,6 @@ export function wireWorkspaceEvents() {
     state.auditQuery = '';
   });
 
-  $('#save-manuscript').addEventListener('click', () => saveAll({ notify: true }));
-
   ['#ai-revise', '#selection-revise'].forEach((selector) => {
     const button = $(selector);
     if (button) button.addEventListener('mousedown', (event) => event.preventDefault());
@@ -474,6 +471,7 @@ export function wireWorkspaceEvents() {
     if (button) setAiMode(button.dataset.aiMode);
   });
 
+  $('#ai-run').addEventListener('click', () => runAi({ action: 'chat' }));
   $('#ai-next').addEventListener('click', () => runAi({ action: 'chapter' }));
   $('#ai-revise').addEventListener('click', () => runAi({ action: 'revise', useSelection: true }));
   $('#selection-revise').addEventListener('click', () => runAi({ action: 'revise', useSelection: true }));
@@ -491,7 +489,7 @@ export function wireWorkspaceEvents() {
   $('#ai-instruction').addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
       event.preventDefault();
-      runAi({ action: 'chapter' });
+      runAi({ action: 'chat' });
     }
   });
 
@@ -513,19 +511,4 @@ export function wireWorkspaceEvents() {
     markDirty('notes');
   });
 
-  $('#manuscript-editor').addEventListener('input', () => {
-    if (!state.current) return;
-    const value = $('#manuscript-editor').value;
-    state.current.manuscript = value;
-    state.current.stats = {
-      words: countWords(value),
-      chapters: countChapters(value, state.current.meta.title),
-    };
-    const heading = getManuscriptTitle(value);
-    state.titleDirty = Boolean(heading?.title && heading.title !== state.loadedHeading);
-    updateTitleDisplay();
-    $('#ms-words').textContent = `${formatNumber(state.current.stats.words)} 字`;
-    scheduleChapterRefresh();
-    markDirty('manuscript');
-  });
 }

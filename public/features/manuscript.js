@@ -3,8 +3,8 @@ import { $, $$, escapeHtml, setText } from '../core/dom.js';
 import { countWords, getManuscriptTitle, parseChapterEntries, pad2 } from '../core/format.js';
 import { marked, sanitizeHtml, renderBlockMath, renderMath } from '../core/markdown.js';
 import { toast } from '../ui/toast.js';
-import { syncEditorHeight } from '../ui/layout.js';
-import { buildReviewSource, hydrateReviewEditors, renderPendingChapter, updateReviewBar } from './review-view.js';
+import { buildReviewSource, hydrateReviewEditors, renderPendingChapter } from './review-view.js';
+import { renderProseBlocks } from './prose-blocks.js';
 import { scheduleRulerRender, setRulerEnabled } from './diff-ruler.js';
 import { markReviewPending } from './pending-marks.js';
 import { updateAiControls } from './ai-controls.js';
@@ -17,25 +17,55 @@ export function renderProse() {
   const review = state.aiReview;
   const source = review ? buildReviewSource(review) : (book.manuscript || '');
 
+  if (state.blockEdit) {
+    const edit = state.blockEdit;
+    state.blockEdit = null;
+    clearTimeout(edit.previewTimer);
+    if (edit.tail) edit.tail.hidden = false;
+    edit.container?.remove();
+    const modeLabel = $('#ms-mode-label');
+    if (modeLabel) modeLabel.textContent = 'READ';
+    updateAiControls();
+  }
+
+  const tail = $('#prose-tail');
+  if (tail) tail.hidden = Boolean(review);
+
   if (!source.trim() && !review) {
-    prose.innerHTML = '<div class="prose-empty">正文还是空的。切到 EDIT 写第一段，或者等 AI 写下一章。</div>';
+    state.proseBlocks = [];
+    state.proseFallback = true;
+    prose.innerHTML = '<div class="prose-empty" data-block-append>正文还是空的。双击这里开始写第一段。</div>';
+    if (tail) tail.hidden = true;
     state.chapterEls = [];
     refreshChapterNav();
+    setRulerEnabled();
     return;
   }
 
-  const html = [];
-  if (review?.notice) {
-    html.push(`<div class="ai-review-note">${escapeHtml(review.notice)}</div>`);
+  if (review) {
+    state.proseBlocks = [];
+    state.proseFallback = true;
+    const html = [];
+    if (review.notice) {
+      html.push(`<div class="ai-review-note">${escapeHtml(review.notice)}</div>`);
+    }
+    if (source.trim()) {
+      html.push(marked.parse(source, { breaks: true, gfm: true }));
+    }
+    html.push(renderPendingChapter(review));
+    prose.innerHTML = sanitizeHtml(html.join(''));
+    hydrateReviewEditors(prose);
+  } else {
+    const rendered = renderProseBlocks(source, marked);
+    prose.replaceChildren(rendered.fragment);
+    state.proseBlocks = rendered.analysis.blocks;
+    state.proseFallback = rendered.fallback;
   }
-  if (source.trim()) {
-    html.push(marked.parse(source, { breaks: true, gfm: true }));
-  }
-  if (review) html.push(renderPendingChapter(review));
-  prose.innerHTML = sanitizeHtml(html.join(''));
-  hydrateReviewEditors(prose);
   renderBlockMath(prose);
   renderMath(prose);
+
+  const lead = prose.querySelector(':scope > p');
+  if (lead) lead.classList.add('lead');
 
   $$('a', prose).forEach((link) => {
     link.target = '_blank';
@@ -67,6 +97,7 @@ export function renderProse() {
     state.pendingHighlight = '';
   }
   markReviewPending();
+  setRulerEnabled();
   scheduleRulerRender();
 }
 
@@ -157,52 +188,45 @@ export function closeChapterMenu() {
 
 export function jumpToChapter(index) {
   if (!state.chapters.length) return;
+  if (state.blockEdit) {
+    toast('先 APPLY 或取消当前段落', 'error');
+    return;
+  }
 
   setCurrentChapter(index);
   closeChapterMenu();
 
-  if (state.manuscriptMode === 'read') {
-    const manuscript = $('.manuscript');
-    const element = state.chapterEls[index];
-    if (!manuscript) return;
+  const manuscript = $('.manuscript');
+  const element = state.chapterEls[index];
+  if (!manuscript) return;
 
-    state.chapterJumping = true;
-    state.chapterJumpToken += 1;
-    const token = state.chapterJumpToken;
+  state.chapterJumping = true;
+  state.chapterJumpToken += 1;
+  const token = state.chapterJumpToken;
 
-    if (!element) {
-      manuscript.scrollTo({ top: 0, behavior: 'smooth' });
-    } else {
-      const stickyHeight = $('.ms-sticky')?.getBoundingClientRect().height || 0;
-      const target = manuscript.scrollTop
-        + element.getBoundingClientRect().top
-        - manuscript.getBoundingClientRect().top
-        - stickyHeight
-        - 8;
-      manuscript.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
-    }
-
-    setTimeout(() => {
-      if (token !== state.chapterJumpToken) return;
-      state.chapterJumping = false;
-      setCurrentChapter(index);
-      updateChapterFromScroll();
-    }, 700);
-    return;
+  if (!element) {
+    manuscript.scrollTo({ top: 0, behavior: 'smooth' });
+  } else {
+    const stickyHeight = $('.ms-sticky')?.getBoundingClientRect().height || 0;
+    const target = manuscript.scrollTop
+      + element.getBoundingClientRect().top
+      - manuscript.getBoundingClientRect().top
+      - stickyHeight
+      - 8;
+    manuscript.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
   }
 
-  const entry = state.chapters[index];
-  const editor = $('#manuscript-editor');
-  if (!editor) return;
-  const position = Math.max(0, Math.min(editor.value.length, entry?.start || 0));
-  editor.focus();
-  editor.setSelectionRange(position, position);
-  scrollEditorToPosition(editor, position);
+  setTimeout(() => {
+    if (token !== state.chapterJumpToken) return;
+    state.chapterJumping = false;
+    setCurrentChapter(index);
+    updateChapterFromScroll();
+  }, 700);
 }
 
 export function updateChapterFromScroll() {
-  if (state.chapterJumping) return;
-  if (state.view !== 'workspace' || state.manuscriptMode !== 'read' || !state.chapters.length) return;
+  if (state.chapterJumping || state.blockEdit) return;
+  if (state.view !== 'workspace' || !state.chapters.length) return;
   const manuscript = $('.manuscript');
   if (!manuscript) return;
 
@@ -217,299 +241,15 @@ export function updateChapterFromScroll() {
   setCurrentChapter(Math.min(index, state.chapters.length - 1));
 }
 
-export function updateChapterFromCursor() {
-  if (state.view !== 'workspace' || state.manuscriptMode !== 'edit' || !state.chapters.length) return;
-  const editor = $('#manuscript-editor');
-  if (!editor) return;
-
-  const position = editor.selectionStart || 0;
-  let index = 0;
-  state.chapters.forEach((chapter, chapterIndex) => {
-    if (chapter.start <= position) index = chapterIndex;
-  });
-  setCurrentChapter(index);
-}
-
 export function scheduleChapterRefresh() {
   clearTimeout(state.chapterTimer);
   state.chapterTimer = setTimeout(() => {
     refreshChapterNav();
-    if (state.manuscriptMode === 'edit') updateChapterFromCursor();
-    else updateChapterFromScroll();
+    updateChapterFromScroll();
   }, 250);
 }
 
 const READ_BLOCK_SELECTOR = '#prose p, #prose h1, #prose h2, #prose h3, #prose h4, #prose li, #prose blockquote, #prose pre';
-
-function captureReadAnchor() {
-  const book = state.current;
-  const manuscript = $('.manuscript');
-  const prose = $('#prose');
-  if (!book || !manuscript || !prose || !state.chapters.length) return null;
-
-  const source = String(book.manuscript || '');
-  const stickyHeight = $('.ms-sticky')?.getBoundingClientRect().height || 0;
-  const viewportTop = manuscript.getBoundingClientRect().top + stickyHeight + 8;
-
-  let chapterIndex = 0;
-  state.chapterEls.forEach((element, index) => {
-    if (element && element.getBoundingClientRect().top <= viewportTop) chapterIndex = index;
-  });
-  chapterIndex = Math.max(0, Math.min(state.chapters.length - 1, chapterIndex));
-
-  const start = Math.max(0, state.chapters[chapterIndex]?.start || 0);
-  const end = state.chapters[chapterIndex + 1]?.start ?? source.length;
-
-  let fraction = 0;
-  const chapterEl = state.chapterEls[chapterIndex];
-  const nextEl = state.chapterEls[chapterIndex + 1];
-  if (chapterEl) {
-    const top = chapterEl.getBoundingClientRect().top;
-    const nextTop = nextEl ? nextEl.getBoundingClientRect().top : prose.getBoundingClientRect().bottom;
-    fraction = Math.max(0, Math.min(1, (viewportTop - top) / Math.max(1, nextTop - top)));
-  }
-
-  let block = null;
-  for (const element of $$(READ_BLOCK_SELECTOR, prose)) {
-    if (element.getBoundingClientRect().bottom > viewportTop + 1) {
-      block = element;
-      break;
-    }
-  }
-
-  let needle = '';
-  if (block && !block.closest('.ai-pending-chapter')) {
-    needle = String(block.textContent || '').trim().slice(0, 40);
-  }
-
-  let offset = Math.round(start + fraction * Math.max(0, end - start));
-  if (needle) {
-    const windowText = source.slice(start, end);
-    for (const length of [needle.length, 24, 16, 10, 6]) {
-      if (length <= 0) continue;
-      const at = windowText.indexOf(needle.slice(0, length));
-      if (at >= 0) {
-        offset = start + at;
-        break;
-      }
-    }
-  }
-
-  return {
-    chapterIndex,
-    offset: Math.max(0, Math.min(source.length, offset)),
-    fraction,
-    needle,
-  };
-}
-
-let editorMirror = null;
-
-function getEditorMirror(editor) {
-  if (!editorMirror) {
-    editorMirror = document.createElement('div');
-    editorMirror.setAttribute('aria-hidden', 'true');
-    editorMirror.style.cssText = 'position:absolute;left:-99999px;top:0;visibility:hidden;pointer-events:none;box-sizing:content-box;margin:0;border:0;padding:0;overflow:visible;';
-    document.body.appendChild(editorMirror);
-  }
-
-  const style = getComputedStyle(editor);
-  const paddingLeft = parseFloat(style.paddingLeft) || 0;
-  const paddingRight = parseFloat(style.paddingRight) || 0;
-  editorMirror.style.width = `${Math.max(0, editor.clientWidth - paddingLeft - paddingRight)}px`;
-  editorMirror.style.fontFamily = style.fontFamily;
-  editorMirror.style.fontSize = style.fontSize;
-  editorMirror.style.fontWeight = style.fontWeight;
-  editorMirror.style.fontStyle = style.fontStyle;
-  editorMirror.style.lineHeight = style.lineHeight;
-  editorMirror.style.letterSpacing = style.letterSpacing;
-  editorMirror.style.wordSpacing = style.wordSpacing;
-  editorMirror.style.textTransform = style.textTransform;
-  editorMirror.style.textIndent = style.textIndent;
-  editorMirror.style.whiteSpace = style.whiteSpace;
-  editorMirror.style.overflowWrap = style.overflowWrap;
-  editorMirror.style.wordBreak = style.wordBreak;
-  editorMirror.style.tabSize = style.tabSize;
-  return editorMirror;
-}
-
-function editorLineTop(editor, position) {
-  const mirror = getEditorMirror(editor);
-  const value = editor.value;
-  const at = Math.max(0, Math.min(value.length, position));
-  mirror.textContent = '';
-  mirror.appendChild(document.createTextNode(value.slice(0, at)));
-  const marker = document.createElement('span');
-  marker.textContent = String.fromCharCode(0x200b);
-  mirror.appendChild(marker);
-  mirror.appendChild(document.createTextNode(value.slice(at)));
-  return marker.offsetTop;
-}
-
-function scrollEditorToPosition(editor, position) {
-  if (!editor) return;
-  const style = getComputedStyle(editor);
-  const paddingTop = parseFloat(style.paddingTop) || 0;
-  const top = editorLineTop(editor, position) + paddingTop;
-  editor.scrollTop = Math.max(0, top);
-}
-
-function applyReadAnchorToEditor(anchor) {
-  const editor = $('#manuscript-editor');
-  const manuscript = $('.manuscript');
-  if (!editor || !anchor) return;
-  if (manuscript) manuscript.scrollTop = 0;
-
-  const position = Math.max(0, Math.min(editor.value.length, anchor.offset || 0));
-  editor.focus();
-  editor.setSelectionRange(position, position);
-  scrollEditorToPosition(editor, position);
-  setCurrentChapter(anchor.chapterIndex || 0);
-}
-
-function captureEditAnchor() {
-  const editor = $('#manuscript-editor');
-  const book = state.current;
-  if (!editor || !book) return null;
-
-  const value = editor.value;
-  let position = Math.max(0, Math.min(value.length, editor.selectionStart || 0));
-
-  const style = getComputedStyle(editor);
-  const lineHeight = parseFloat(style.lineHeight) || 32;
-  const paddingTop = parseFloat(style.paddingTop) || 0;
-  const caretTop = editorLineTop(editor, position) + paddingTop;
-  if (caretTop < editor.scrollTop || caretTop + lineHeight > editor.scrollTop + editor.clientHeight) {
-    const maxScroll = Math.max(1, editor.scrollHeight - editor.clientHeight);
-    const ratio = Math.min(1, Math.max(0, editor.scrollTop / maxScroll));
-    position = Math.round(ratio * value.length);
-  }
-
-  let chapterIndex = 0;
-  state.chapters.forEach((chapter, index) => {
-    if (chapter.start <= position) chapterIndex = index;
-  });
-  chapterIndex = Math.max(0, Math.min(state.chapters.length - 1, chapterIndex));
-
-  const start = state.chapters[chapterIndex]?.start || 0;
-  const end = state.chapters[chapterIndex + 1]?.start ?? value.length;
-  const fraction = Math.max(0, Math.min(1, (position - start) / Math.max(1, end - start)));
-
-  const lineStart = value.lastIndexOf('\n', Math.max(0, position - 1)) + 1;
-  let lineEnd = value.indexOf('\n', position);
-  if (lineEnd < 0) lineEnd = value.length;
-  const needle = value.slice(lineStart, lineEnd).trim()
-    .replace(/^#{1,6}\s+/, '')
-    .replace(/^[-*>]\s+/, '')
-    .slice(0, 40);
-
-  return { chapterIndex, offset: position, fraction, needle };
-}
-
-function blockInChapter(element, chapterEl, nextEl) {
-  if (!chapterEl) return true;
-  if (element === chapterEl) return true;
-  if (!(chapterEl.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
-  if (nextEl && !(nextEl.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_PRECEDING)) return false;
-  return true;
-}
-
-function applyEditAnchorToReader(anchor) {
-  const manuscript = $('.manuscript');
-  const prose = $('#prose');
-  if (!manuscript || !prose || !anchor) return;
-
-  const stickyHeight = $('.ms-sticky')?.getBoundingClientRect().height || 0;
-  const topOffset = stickyHeight + 8;
-  const chapterEl = state.chapterEls[anchor.chapterIndex];
-  const nextEl = state.chapterEls[anchor.chapterIndex + 1];
-  const blocks = $$(READ_BLOCK_SELECTOR, prose);
-  let target = null;
-
-  if (anchor.needle) {
-    const candidates = anchor.needle.length > 12
-      ? [anchor.needle, anchor.needle.slice(0, 12)]
-      : [anchor.needle];
-    for (const needle of candidates) {
-      target = blocks.find((block) => blockInChapter(block, chapterEl, nextEl)
-        && String(block.textContent || '').includes(needle)) || null;
-      if (target) break;
-    }
-  }
-
-  if (target) {
-    const top = manuscript.scrollTop
-      + target.getBoundingClientRect().top
-      - manuscript.getBoundingClientRect().top
-      - topOffset;
-    manuscript.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
-    updateChapterFromScroll();
-    return;
-  }
-
-  if (chapterEl) {
-    const chapterTop = chapterEl.getBoundingClientRect().top;
-    const nextTop = nextEl ? nextEl.getBoundingClientRect().top : prose.getBoundingClientRect().bottom;
-    const targetY = chapterTop + Math.max(0, nextTop - chapterTop) * anchor.fraction;
-    const top = manuscript.scrollTop
-      + targetY
-      - manuscript.getBoundingClientRect().top
-      - topOffset;
-    manuscript.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
-    updateChapterFromScroll();
-    return;
-  }
-
-  manuscript.scrollTo({ top: 0, behavior: 'auto' });
-  updateChapterFromScroll();
-}
-
-export function setManuscriptMode(mode, { preservePosition = false } = {}) {
-  if (mode === 'edit' && state.aiReview) {
-    toast('先处理 AI 提案，再手动编辑', 'error');
-    return;
-  }
-
-  const previousMode = state.manuscriptMode;
-  let anchor = null;
-  if (preservePosition) {
-    if (previousMode === 'read' && mode === 'edit') anchor = captureReadAnchor();
-    else if (previousMode === 'edit' && mode === 'read') anchor = captureEditAnchor();
-  }
-
-  state.manuscriptMode = mode;
-  const editing = mode === 'edit';
-
-  $('#prose').hidden = editing;
-  $('#manuscript-editor').hidden = !editing;
-  $('#save-manuscript').hidden = !editing;
-  hideSelection();
-  $('#ms-mode-label').textContent = editing ? 'EDIT' : 'READ';
-
-  $$('#ms-mode button').forEach((button) => {
-    button.classList.toggle('on', button.dataset.msMode === mode);
-  });
-
-  if (!editing) {
-    renderProse();
-    if (anchor) {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => applyEditAnchorToReader(anchor));
-      });
-    }
-  } else {
-    const manuscript = $('.manuscript');
-    if (manuscript) manuscript.scrollTop = 0;
-    requestAnimationFrame(() => {
-      syncEditorHeight();
-      if (anchor) applyReadAnchorToEditor(anchor);
-      else updateChapterFromCursor();
-    });
-  }
-  updateReviewBar();
-  setRulerEnabled();
-}
-
 
 function blockElementFor(node, prose) {
   const element = node?.nodeType === 1 ? node : node?.parentElement;
@@ -581,7 +321,7 @@ function selectionChapterTitle(range, prose) {
 }
 
 export function checkSelection() {
-  if (state.view !== 'workspace' || state.manuscriptMode !== 'read') {
+  if (state.view !== 'workspace' || state.blockEdit) {
     hideSelection();
     return;
   }

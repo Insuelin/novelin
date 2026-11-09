@@ -3,8 +3,10 @@ import { $, $$ } from './core/dom.js';
 import { api } from './core/api.js';
 import { aiLog, renderLog } from './core/logger.js';
 import { toast } from './ui/toast.js';
-import { closeDropdowns, settleConfirm, applyAccent, loadAccent, tickClock } from './ui/primitives.js';
+import { closeDropdowns, settleConfirm, applyAccent, loadAccent, tickClock, confirmDialog } from './ui/primitives.js';
 import { bus } from './core/bus.js';
+import { applyBlockEdit, cancelBlockEdit } from './features/block-editor.js';
+import { openSourceDialog } from './features/source-dialog.js';
 import { closeChapterMenu, checkSelection } from './features/manuscript.js';
 import { runAi, stopAi } from './features/ai-agent.js';
 import { loadBooks, renderLibrary, wireLibraryEvents } from './features/library.js';
@@ -33,8 +35,35 @@ function showView(name) {
   window.scrollTo(0, 0);
 }
 
+async function ensureNoBlockDraft() {
+  const edit = state.blockEdit;
+  if (!edit) return true;
+  if (!edit.dirty) {
+    cancelBlockEdit({ silent: true });
+    return true;
+  }
+  const confirmed = await confirmDialog({
+    title: '放弃未提交的段落？',
+    text: '当前段落还没有 APPLY，离开会丢掉草稿。',
+    okLabel: '放弃并离开',
+  });
+  if (!confirmed) return false;
+  cancelBlockEdit({ silent: true });
+  return true;
+}
+
+function restoreBookHash() {
+  location.hash = state.current ? `#/book/${state.current.meta.id}` : '#/library';
+}
+
 async function route() {
   const hash = location.hash || '#/library';
+  const targetId = hash.startsWith('#/book/') ? decodeURIComponent(hash.slice(7)) : null;
+  const sameBook = Boolean(targetId && state.current?.meta.id === targetId);
+  if (state.blockEdit && !sameBook && !(await ensureNoBlockDraft())) {
+    restoreBookHash();
+    return;
+  }
   if (hash.startsWith('#/book/')) {
     const id = decodeURIComponent(hash.slice(7));
     if (!id) {
@@ -53,13 +82,18 @@ async function route() {
 }
 
 async function openBook(id) {
+  if (!(await ensureNoBlockDraft())) {
+    restoreBookHash();
+    return;
+  }
+  const sourceDialog = $('#source-dialog');
+  if (sourceDialog?.open) sourceDialog.close();
   if (state.aiRunning) stopAi({ silent: true });
   if (state.current && state.current.meta.id !== id) await flushSave();
   try {
     const { book } = await api(`/books/${encodeURIComponent(id)}`);
     state.current = book;
     state.dirty.clear();
-    state.manuscriptMode = 'read';
     renderWorkspace();
     showView('workspace');
     if (location.hash !== `#/book/${id}`) location.hash = `#/book/${id}`;
@@ -93,6 +127,7 @@ function wireEvents() {
   $$('[data-nav]').forEach((button) => {
     button.addEventListener('click', async () => {
       if (button.dataset.nav === 'library') {
+        if (!(await ensureNoBlockDraft())) return;
         await flushSave();
         location.hash = '#/library';
         return;
@@ -143,24 +178,37 @@ function wireEvents() {
   window.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
       event.preventDefault();
+      if (state.blockEdit) {
+        applyBlockEdit();
+        return;
+      }
       if ($('#briefing-dialog')?.open) {
         flushBriefingDialog();
         return;
       }
       if (state.view === 'workspace') saveAll({ notify: true });
     }
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'e') {
+      event.preventDefault();
+      openSourceDialog();
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
       event.preventDefault();
       if (state.view === 'library') $('#search-input').focus();
     }
     if (event.key === 'Escape') {
+      if (state.blockEdit) {
+        event.preventDefault();
+        cancelBlockEdit();
+        return;
+      }
       closeChapterMenu();
       closeDropdowns();
     }
   });
 
   window.addEventListener('beforeunload', (event) => {
-    if (state.dirty.size) {
+    if (state.dirty.size || state.blockEdit?.dirty) {
       event.preventDefault();
       event.returnValue = '';
     }

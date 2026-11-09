@@ -6,7 +6,7 @@ import { aiLog, setAiState } from '../core/logger.js';
 import { toast } from '../ui/toast.js';
 import { ensureModelCatalog, queueMetaPatch, renderAgentSettings, updateAiControls } from './ai-controls.js';
 import { markPendingSelection, markReviewPending } from './pending-marks.js';
-import { startReview, clearReview, applyPreviewOp, openProposalReview, buildReviewDecisions } from './ai-review.js';
+import { startReview, clearReview, applyPreviewOp, openProposalReview, buildReviewDecisions, scheduleDraftRender } from './ai-review.js';
 import { updateReviewBar } from './review-view.js';
 import { markSummaryPending, startAppendedSummaries } from './summaries.js';
 import { flushSave } from './persistence.js';
@@ -202,6 +202,8 @@ function handleAiEvent(type, payload = {}) {
 
   if (type === 'done') {
     aiLog('SYS', payload.ok ? 'DONE' : 'FAILED');
+    const message = String(payload.message || '').trim();
+    if (message) aiLog('AI', message);
     return;
   }
 }
@@ -214,13 +216,21 @@ export async function runAi({ action = 'chapter', useSelection = false, plotItem
     return;
   }
   if (state.aiRunning) return;
+  if (state.blockEdit) {
+    toast('先 APPLY 或取消当前段落', 'error');
+    return;
+  }
   if (state.aiProposal?.status === 'pending') {
     toast('先处理当前提案', 'error');
     return;
   }
 
-  let instruction = String(presetInstruction || $('#ai-instruction')?.value || '').trim().slice(0, 8000);
-  if (action === 'chapter') instruction = instruction || '写下一章，承接前文。';
+  const typed = String(presetInstruction || $('#ai-instruction')?.value || '').trim().slice(0, 8000);
+  let instruction = action === 'chapter' ? '写下一章，承接前文。' : typed;
+  if (action === 'chat' && !instruction) {
+    toast('先在指令框写要做什么', 'error');
+    return;
+  }
   if (action === 'revise') {
     instruction = instruction || (useSelection
       ? '改写选中的文字，保持原意和文风。'
@@ -324,7 +334,7 @@ export async function runAi({ action = 'chapter', useSelection = false, plotItem
     if (!state.aiProposal && !hadError) {
       if (state.aiReview) {
         clearReview();
-        if (!written && !noticedNoChange) {
+        if (!written && !noticedNoChange && action !== 'chat') {
           aiLog('SYS', 'AI 没有产生修改');
           toast('AI 没有产生修改', 'info');
         }

@@ -1,9 +1,9 @@
 import { state } from '../core/state.js';
 import { $ } from '../core/dom.js';
-import { getManuscriptTitle, formatNumber } from '../core/format.js';
+import { getManuscriptTitle, formatNumber, countWords, countChapters } from '../core/format.js';
 import { api } from '../core/api.js';
 import { toast, setSaveState } from '../ui/toast.js';
-import { refreshChapterNav } from './manuscript.js';
+import { renderProse, scheduleChapterRefresh } from './manuscript.js';
 import { updateBookSummary } from './library.js';
 
 /* ---------- title ---------- */
@@ -20,7 +20,11 @@ export function startTitleEdit() {
   const book = state.current;
   const heading = $('#ms-title');
   const input = $('#ms-title-input');
-  if (!book || !heading || !input || state.titleEditing || state.manuscriptMode === 'edit') return;
+  if (!book || !heading || !input || state.titleEditing) return;
+  if (state.blockEdit) {
+    toast('先 APPLY 或取消当前段落', 'error');
+    return;
+  }
 
   state.titleEditing = true;
   input.value = getManuscriptTitle(book.manuscript)?.title || book.meta.title || '';
@@ -98,9 +102,7 @@ export async function commitTitleEdit() {
         manuscriptSaved = true;
         updateTitleDisplay();
         $('#ms-words').textContent = `${formatNumber(stats.words)} 字`;
-        const editor = $('#manuscript-editor');
-        if (editor) editor.value = nextManuscript;
-        refreshChapterNav();
+        renderProse();
       }
     }
 
@@ -127,6 +129,7 @@ export async function commitTitleEdit() {
       toast(`正文标题已保存，书名没保存：${err.message}`, 'error');
       stopTitleEdit({ restore: false });
       updateTitleDisplay();
+      renderProse();
     } else {
       toast(err.message || '书名保存失败', 'error');
       stopTitleEdit();
@@ -159,6 +162,27 @@ async function syncMetaFromManuscript(bookId) {
   } catch (err) {
     toast(`书名同步失败：${err.message}`, 'error');
   }
+}
+
+/** 正文改动统一入口：块 APPLY、源码框、AI 刷新后的本地状态都走这里。 */
+export function applyManuscriptText(value, { mark = true } = {}) {
+  const book = state.current;
+  if (!book) return;
+
+  const text = String(value ?? '');
+  book.manuscript = text;
+  book.stats = {
+    words: countWords(text),
+    chapters: countChapters(text, book.meta.title),
+  };
+
+  const heading = getManuscriptTitle(text);
+  state.titleDirty = Boolean(heading?.title && heading.title !== state.loadedHeading);
+  updateTitleDisplay();
+  const words = $('#ms-words');
+  if (words) words.textContent = `${formatNumber(book.stats.words)} 字`;
+  scheduleChapterRefresh();
+  if (mark) markDirty('manuscript');
 }
 
 /* ---------- saving ---------- */

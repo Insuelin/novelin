@@ -178,11 +178,12 @@ export function updateAiControls() {
   const enabled = Boolean(book?.meta.aiEnabled);
   const running = state.aiRunning;
   const pending = state.aiProposal?.status === 'pending';
-  const busy = running || pending;
+  const busy = running || pending || Boolean(state.blockEdit);
   const hasSelection = Boolean(state.selectionText);
 
   const instruction = $('#ai-instruction');
   setDisabled(instruction, !enabled || busy);
+  setDisabled($('#ai-run'), !enabled || busy);
   setDisabled($('#ai-next'), !enabled || busy);
   setDisabled($('#ai-revise'), !enabled || busy || !hasSelection);
   setDisabled($('#selection-revise'), !enabled || busy || !hasSelection);

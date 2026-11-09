@@ -97,8 +97,19 @@ export function updateReviewBar() {
   const bar = $('#review-bar');
   if (bar) bar.hidden = !review;
 
-  const editButton = $('#ms-mode [data-ms-mode="edit"]');
-  if (editButton) editButton.disabled = Boolean(review);
+  const sourceButton = $('#source-btn');
+  if (sourceButton) {
+    sourceButton.disabled = Boolean(review)
+      || Boolean(state.blockEdit)
+      || state.aiRunning
+      || state.aiProposal?.status === 'pending';
+  }
+  const tail = $('#prose-tail');
+  if (tail) {
+    tail.hidden = Boolean(review)
+      || Boolean(state.blockEdit)
+      || !String(state.current?.manuscript || '').trim();
+  }
   if (!review) return;
 
   const pending = review.proposal?.status === 'pending';

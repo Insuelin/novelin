@@ -1,9 +1,11 @@
 import express from 'express';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './lib/store.js';
 import { searchBooks } from './lib/search.js';
 import { createAiClient } from './lib/ai.js';
+import { createDebugLog } from './lib/debug-log.js';
 import { runAgent, summarizeChapter } from './lib/agent.js';
 import { runAudit } from './lib/audit.js';
 import { applyDecisions, applyOps, listProposals, getProposal, setProposalStatus } from './lib/proposals.js';
@@ -35,8 +37,10 @@ function publicSummary(entry) {
 }
 
 export function createApp({ dataDir, aiClient } = {}) {
-  const store = createStore(dataDir || process.env.DATA_DIR || path.join(__dirname, 'data'));
-  const ai = aiClient || createAiClient();
+  const resolvedDataDir = dataDir || process.env.DATA_DIR || path.join(__dirname, 'data');
+  const store = createStore(resolvedDataDir);
+  const debugLog = createDebugLog({ dir: path.join(resolvedDataDir, 'logs') });
+  const ai = aiClient || createAiClient({ debugLog: debugLog.enabled ? debugLog.log : null });
 
   const app = express();
   app.disable('x-powered-by');
@@ -44,6 +48,23 @@ export function createApp({ dataDir, aiClient } = {}) {
 
   app.get('/api/health', (req, res) => {
     res.json({ ok: true, name: 'novelin', version: VERSION });
+  });
+
+  app.post('/api/debug/log', (req, res) => {
+    const entries = Array.isArray(req.body?.entries) ? req.body.entries.slice(0, 100) : [];
+    for (const entry of entries) {
+      const level = ['info', 'warn', 'error'].includes(entry?.level) ? entry.level : 'info';
+      debugLog.log('client.log', {
+        source: 'client',
+        at: String(entry?.at || '').slice(0, 40),
+        time: String(entry?.time || '').slice(0, 20),
+        tag: String(entry?.tag || '').slice(0, 40),
+        text: String(entry?.text || '').slice(0, 8000),
+        bookId: String(entry?.bookId || '').slice(0, 80),
+        view: String(entry?.view || '').slice(0, 40),
+      }, level);
+    }
+    res.json({ ok: true });
   });
 
   app.get('/api/models', async (req, res) => {
@@ -165,6 +186,31 @@ export function createApp({ dataDir, aiClient } = {}) {
     const settings = normalizeAgentSettings(book.meta);
     const finalInstruction = action === 'chapter' ? '写下一章，承接前文。' : instruction;
 
+    const runId = randomUUID();
+    const runStartedAt = Date.now();
+    debugLog.log('ai.run.start', {
+      runId,
+      bookId: book.meta.id,
+      title: book.meta.title || '',
+      mode,
+      action,
+      model,
+      maxTokens: settings.maxTokens,
+      maxSteps: settings.maxSteps,
+      reasoningEffort: settings.reasoningEffort,
+      instruction: finalInstruction,
+      selection: selection
+        ? {
+          chapter: String(selection.chapter || '').slice(0, 200),
+          text: String(selection.text || '').slice(0, 8000),
+          before: String(selection.before || '').slice(-1000),
+          after: String(selection.after || '').slice(0, 1000),
+        }
+        : null,
+      plotItems: plotItems.length,
+      plotDropped: action === 'plot' ? rawPlotItems.length - plotItems.length : 0,
+    });
+
     res.status(200);
     res.set({
       'Content-Type': 'text/event-stream; charset=utf-8',
@@ -218,6 +264,15 @@ export function createApp({ dataDir, aiClient } = {}) {
         onEvent: (event) => send(event.type, event),
       });
 
+      debugLog.log('ai.run.done', {
+        runId,
+        ms: Date.now() - runStartedAt,
+        written: Boolean(result.written),
+        proposalId: result.proposal?.id || null,
+        chapterTitle: result.chapterTitle || '',
+        finalChars: String(result.finalText || '').length,
+      });
+
       send('done', {
         ok: true,
         written: result.written,
@@ -228,7 +283,16 @@ export function createApp({ dataDir, aiClient } = {}) {
           : '',
       });
     } catch (err) {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) {
+        debugLog.log('ai.run.abort', { runId, ms: Date.now() - runStartedAt });
+        return;
+      }
+      debugLog.log('ai.run.error', {
+        runId,
+        ms: Date.now() - runStartedAt,
+        message: err.message || 'AI 运行失败',
+        stack: String(err.stack || '').slice(0, 8000),
+      }, 'error');
       send('error', {
         message: err.message || 'AI 运行失败',
         detail: err.stack ? String(err.stack).split('\n')[0] : undefined,
@@ -638,13 +702,22 @@ export function createApp({ dataDir, aiClient } = {}) {
   app.use((err, req, res, next) => {
     if (res.headersSent) return next(err);
     const status = err.status || err.statusCode || 500;
-    if (status >= 500) console.error(err);
+    if (status >= 500) {
+      console.error(err);
+      debugLog.log('server.error', {
+        method: req.method,
+        path: req.originalUrl,
+        status,
+        message: err.message || '服务器内部错误',
+        stack: String(err.stack || '').slice(0, 8000),
+      }, 'error');
+    }
     return res.status(status).json({
       error: status >= 500 ? '服务器内部错误' : (err.message || '请求错误'),
     });
   });
 
-  return { app, store };
+  return { app, store, debugLog };
 }
 
 const isMain = process.argv[1]
@@ -654,11 +727,12 @@ if (isMain) {
   const host = process.env.HOST || '127.0.0.1';
   const port = Number(process.env.PORT || 4173);
   const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
-  const { app } = createApp({ dataDir });
+  const { app, debugLog } = createApp({ dataDir });
 
   app.listen(port, host, () => {
     console.log(`NOVELIN ${VERSION}`);
     console.log(`API  http://${host}:${port}/api/health`);
     console.log(`DATA ${dataDir}`);
+    debugLog.log('server.start', { host, port, dataDir, version: VERSION });
   });
 }

@@ -6,11 +6,11 @@ import { aiLog } from '../core/logger.js';
 import { toast } from '../ui/toast.js';
 
 const TOKEN_PRESETS = [2048, 4096, 8192, 16384];
-const STEP_PRESETS = [6, 10, 16];
+const STEP_PRESETS = [6, 10, 16, 24, 32];
 const TOKEN_MIN = 256;
 const TOKEN_MAX = 65536;
 const DEFAULT_MAX_TOKENS = 8192;
-const DEFAULT_MAX_STEPS = 10;
+const DEFAULT_MAX_STEPS = 16;
 const REASONING_LABELS = {
   none: 'OFF',
   minimal: 'MIN',

@@ -243,10 +243,12 @@
             </div>
             <div class="setting-row">
               <span class="setting-label">ROUNDS / 轮次</span>
-              <div class="segmented small" id="ai-max-steps">
+              <div class="segmented small" id="ai-max-steps" title="轮次用满后会自动续到两倍，总上限 64 轮">
                 <button type="button" data-max-steps="6">6</button>
-                <button type="button" data-max-steps="10" class="on">10</button>
-                <button type="button" data-max-steps="16">16</button>
+                <button type="button" data-max-steps="10">10</button>
+                <button type="button" data-max-steps="16" class="on">16</button>
+                <button type="button" data-max-steps="24">24</button>
+                <button type="button" data-max-steps="32">32</button>
               </div>
             </div>
             <div class="setting-row" id="ai-reasoning-row" hidden>

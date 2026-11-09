@@ -80,7 +80,7 @@ export function hydrateReviewEditors(root) {
 }
 
 export function renderPendingChapter(review) {
-  if (!review || review.action !== 'chapter') return '';
+  if (!review || (review.action !== 'chapter' && !review.draftFinal)) return '';
   const body = review.draft.trim()
     ? marked.parse(review.draft, { breaks: true, gfm: true })
     : '<p class="ai-pending-empty">AI 正在写下一章…</p>';

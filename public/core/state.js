@@ -58,6 +58,7 @@ export const state = {
   summaryBusy: false,
   summaryStop: false,
   summaryPending: new Map(),
+  summaryRuns: new Map(),
   summaryTimers: new Map(),
   summarySaving: new Set(),
   summaryDirty: new Set(),

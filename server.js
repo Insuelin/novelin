@@ -36,6 +36,13 @@ function publicSummary(entry) {
   return rest;
 }
 
+export function buildChapterInstruction(extra = '') {
+  const fixed = '写下一章，承接前文。';
+  const value = String(extra || '').trim().slice(0, 8000);
+  if (!value) return fixed;
+  return `${fixed}\n\n【补充要求】\n${value}\n\n如果补充要求与整章正文的格式规则冲突，以整章正文的格式规则为准。`;
+}
+
 export function createApp({ dataDir, aiClient } = {}) {
   const resolvedDataDir = dataDir || process.env.DATA_DIR || path.join(__dirname, 'data');
   const store = createStore(resolvedDataDir);
@@ -184,7 +191,7 @@ export function createApp({ dataDir, aiClient } = {}) {
     }
 
     const settings = normalizeAgentSettings(book.meta);
-    const finalInstruction = action === 'chapter' ? '写下一章，承接前文。' : instruction;
+    const finalInstruction = action === 'chapter' ? buildChapterInstruction(instruction) : instruction;
 
     const runId = randomUUID();
     const runStartedAt = Date.now();
@@ -346,6 +353,30 @@ export function createApp({ dataDir, aiClient } = {}) {
       return res.json({
         version: 2,
         chapters: book.summaries.map(publicSummary),
+      });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  app.delete('/api/books/:id/summaries/orphans', async (req, res, next) => {
+    try {
+      const body = req.body || {};
+      const all = body.all === true;
+      const match = all
+        ? null
+        : {
+          title: String(body.title || ''),
+          at: String(body.at || ''),
+          sourceHash: String(body.sourceHash || ''),
+        };
+      if (!all && !match.title && !match.at && !match.sourceHash) {
+        return res.status(400).json({ error: '缺少要删除的摘要标识' });
+      }
+      const result = await store.deleteOrphanSummaries(req.params.id, match);
+      return res.json({
+        deleted: result.deleted,
+        orphans: result.orphans.map(publicSummary),
       });
     } catch (err) {
       return next(err);

@@ -142,7 +142,7 @@ export function renderAgentSettings() {
   const pendingSet = state.summaryPending.get(book.meta.id);
   const pendingCount = pendingSet ? pendingSet.size : 0;
   const summaryButton = $('#ai-summary-count');
-  setDisabled(summaryButton, !enabled || pendingCount > 0);
+  setDisabled(summaryButton, !enabled);
   setText(summaryButton, pendingCount ? '生成中…' : `${count} 条`);
 }
 

@@ -94,6 +94,7 @@ function toolProgressLabel(name) {
     read_notes: '读取设定…',
     edit_manuscript: '应用修改…',
     edit_outline: '修改大纲…',
+    append_chapter: '撰写新章…',
     finish: '收尾…',
   }[name] || '处理中…';
 }
@@ -170,6 +171,12 @@ function handleAiEvent(type, payload = {}) {
   if (type === 'written') {
     const changed = Array.isArray(payload.changed) ? payload.changed.join(' + ') : '正文';
     aiLog('OK', `写入 ${changed}`, 'ok');
+    const appended = Array.isArray(payload.appended) ? payload.appended : [];
+    const bookId = state.current?.meta.id;
+    if (appended.length && bookId) {
+      markSummaryPending(bookId, appended);
+      startAppendedSummaries(bookId, appended);
+    }
     return;
   }
 
@@ -222,7 +229,7 @@ export async function runAi({ action = 'chapter', useSelection = false, plotItem
   }
 
   const typed = String(presetInstruction || $('#ai-instruction')?.value || '').trim().slice(0, 8000);
-  let instruction = action === 'chapter' ? '写下一章，承接前文。' : typed;
+  let instruction = typed;
   if (action === 'chat' && !instruction) {
     toast('先在指令框写要做什么', 'error');
     return;
@@ -271,6 +278,7 @@ export async function runAi({ action = 'chapter', useSelection = false, plotItem
   const model = book.meta.model || '';
   const controller = new AbortController();
   let written = false;
+  let appendedWritten = false;
   let hadError = false;
   let noticedNoChange = false;
 
@@ -312,7 +320,10 @@ export async function runAi({ action = 'chapter', useSelection = false, plotItem
 
     await streamAiResponse(response, (type, payload) => {
       if (state.current?.meta.id !== bookId) return;
-      if (type === 'written') written = true;
+      if (type === 'written') {
+        written = true;
+        if (Array.isArray(payload.appended) && payload.appended.length) appendedWritten = true;
+      }
       if (type === 'error') hadError = true;
       if (type === 'notice' && /不需要修改/.test(String(payload.message || ''))) {
         noticedNoChange = true;
@@ -325,7 +336,7 @@ export async function runAi({ action = 'chapter', useSelection = false, plotItem
     if (written) {
       aiLog('OK', '正文已更新，正在刷新', 'ok');
       clearReview({ render: false });
-      await bus.emit('book:refresh', { scrollEnd: action === 'chapter' });
+      await bus.emit('book:refresh', { scrollEnd: action === 'chapter' || appendedWritten });
     }
     if (!state.aiProposal && !hadError) {
       if (state.aiReview) {

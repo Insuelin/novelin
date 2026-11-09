@@ -18,6 +18,8 @@ import {
   summaryTagChapter,
   regenerateSummary,
   backfillSummaries,
+  regenerateStaleSummaries,
+  deleteSummaryOrphan,
   flushSummaryTimers,
 } from './summaries.js';
 import { openTermsDialog, previewTermClean, applyTermClean, removeSavedTerm } from './terms.js';
@@ -411,12 +413,24 @@ export function wireWorkspaceEvents() {
       return;
     }
 
+    const orphan = event.target.closest('[data-orphan-delete]');
+    if (orphan) {
+      event.preventDefault();
+      deleteSummaryOrphan({
+        title: orphan.dataset.orphanTitle || '',
+        at: orphan.dataset.orphanAt || '',
+        sourceHash: orphan.dataset.orphanHash || '',
+      });
+      return;
+    }
+
     const button = event.target.closest('[data-summary-regenerate]');
     if (!button) return;
     regenerateSummary(Number(button.dataset.summaryRegenerate));
   });
 
   $('#summary-generate-missing')?.addEventListener('click', backfillSummaries);
+  $('#summary-regenerate-stale')?.addEventListener('click', regenerateStaleSummaries);
   $('#summary-stop')?.addEventListener('click', () => {
     state.summaryStop = true;
     updateSummaryHint('停止中…等已发出的章节完成');

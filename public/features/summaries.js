@@ -9,11 +9,94 @@ import { renderAgentSettings } from './ai-controls.js';
 
 const SUMMARY_TAG_LABELS = { characters: '人物', locations: '地点', items: '道具', hooks: '伏笔' };
 const SUMMARY_CONCURRENCY = 5;
+const SUMMARY_STALE_CONCURRENCY = 4;
+const SUMMARY_RETRY_DELAY = 700;
+
+function summaryRunMap(bookId, create = false) {
+  if (!bookId) return null;
+  let map = state.summaryRuns.get(bookId);
+  if (!map && create) {
+    map = new Map();
+    state.summaryRuns.set(bookId, map);
+  }
+  return map || null;
+}
+
+function getSummaryRun(bookId, index) {
+  return summaryRunMap(bookId)?.get(index) || null;
+}
+
+function setSummaryRun(bookId, index, run) {
+  const map = summaryRunMap(bookId, true);
+  if (!map) return;
+  if (run) map.set(index, run);
+  else map.delete(index);
+  if (state.summaryBookId === bookId) updateSummaryItemState(index);
+}
+
+function runIsActive(run) {
+  return Boolean(run && run.status !== 'failed');
+}
+
+function summaryStatusHtml(index, run) {
+  if (!run) return '';
+  const label = run.status === 'queued'
+    ? '排队'
+    : run.status === 'retrying'
+      ? `重试中 ${run.attempt}/2`
+      : run.status === 'failed'
+        ? '失败'
+        : '生成中';
+  const title = run.error ? ` title="${escapeHtml(run.error)}"` : '';
+  return `<span class="summary-status ${run.status}" data-summary-status="${index}"${title}><i aria-hidden="true"></i>${label}</span>`;
+}
+
+function updateSummaryItemState(index) {
+  const item = document.querySelector(`#summary-list [data-summary-item="${index}"]`);
+  if (!item) return;
+  const chapter = state.summaryChapters.find((entry) => entry.index === index);
+  const run = getSummaryRun(state.summaryBookId, index);
+  const badges = item.querySelector('.summary-badges');
+  if (badges) {
+    const current = badges.querySelector('[data-summary-status]');
+    if (!run) {
+      current?.remove();
+    } else {
+      const wrapper = document.createElement('span');
+      wrapper.innerHTML = summaryStatusHtml(index, run);
+      const next = wrapper.firstElementChild;
+      if (current) current.replaceWith(next);
+      else badges.prepend(next);
+    }
+  }
+
+  const generating = runIsActive(run);
+  item.classList.toggle('is-generating', generating);
+  item.classList.toggle('is-failed', run?.status === 'failed');
+  const blocked = state.summaryBusy || !chapter?.chars || !state.current?.meta.aiEnabled || generating;
+  const textarea = item.querySelector('.summary-text');
+  if (textarea) textarea.disabled = blocked;
+  const button = item.querySelector('[data-summary-regenerate]');
+  if (button) button.disabled = blocked;
+}
+
+function isRetryableSummaryError(error) {
+  const status = Number(error?.status);
+  return !status || status >= 500;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export function markSummaryPending(bookId, chapters) {
   const pending = state.summaryPending.get(bookId) || new Set();
   for (const chapter of chapters) {
-    if (Number.isInteger(chapter?.index)) pending.add(chapter.index);
+    if (!Number.isInteger(chapter?.index)) continue;
+    pending.add(chapter.index);
+    if (!getSummaryRun(bookId, chapter.index)) {
+      setSummaryRun(bookId, chapter.index, { status: 'queued', attempt: 1, error: '' });
+    }
   }
   if (!pending.size) return;
   state.summaryPending.set(bookId, pending);
@@ -27,6 +110,7 @@ export function startAppendedSummaries(bookId, chapters) {
 
 async function generateSummaryForChapter(bookId, chapter) {
   if (!Number.isInteger(chapter?.index)) return;
+  setSummaryRun(bookId, chapter.index, { status: 'generating', attempt: 1, error: '' });
   if (state.current?.meta.id === bookId) {
     aiLog('SUMMARY', `第 ${chapter.index} 章摘要生成中…`);
   }
@@ -38,6 +122,17 @@ async function generateSummaryForChapter(bookId, chapter) {
     });
 
     if (state.current?.meta.id === bookId) {
+      const latest = state.summaryChapters.find((entry) => entry.index === chapter.index);
+      if (latest) {
+        Object.assign(latest, {
+          summary: String(summary.summary || ''),
+          tags: summary.tags || {},
+          source: summary.source || 'ai',
+          at: summary.at || '',
+          hasSummary: true,
+          stale: false,
+        });
+      }
       updateSummaryEntry({
         index: chapter.index,
         title: summary.title || chapter.title || '',
@@ -46,9 +141,16 @@ async function generateSummaryForChapter(bookId, chapter) {
         source: summary.source || 'ai',
         at: summary.at || '',
       });
+      setSummaryRun(bookId, chapter.index, null);
+      if (state.summaryBookId === bookId && $('#summary-dialog')?.open) renderSummaryList();
       aiLog('OK', `第 ${chapter.index} 章摘要已生成`, 'ok');
     }
   } catch (err) {
+    setSummaryRun(bookId, chapter.index, {
+      status: 'failed',
+      attempt: 1,
+      error: err.message || '摘要生成失败',
+    });
     if (state.current?.meta.id === bookId) {
       aiLog('WARN', `第 ${chapter.index} 章摘要失败：${err.message}`, 'warn');
       toast(`第 ${chapter.index} 章摘要生成失败：${err.message || '未知错误'}`, 'error', 5000);
@@ -210,16 +312,19 @@ function renderSummaryList() {
 
     const empty = !chapter.chars;
     const disabled = busy || empty || !enabled;
-    html.push(`<div class="summary-item" data-summary-item="${chapter.index}">
+    const run = getSummaryRun(state.summaryBookId, chapter.index);
+    const controlsDisabled = disabled || runIsActive(run);
+    const itemClass = `summary-item${runIsActive(run) ? ' is-generating' : ''}${run?.status === 'failed' ? ' is-failed' : ''}`;
+    html.push(`<div class="${itemClass}" data-summary-item="${chapter.index}">
       <div class="summary-head">
         <span class="summary-no">CH ${pad2(chapter.index)}</span>
         <span class="summary-title">${escapeHtml(chapter.title)}</span>
-        <span class="summary-badges">${badges.join('')}<span>${formatNumber(chapter.chars)} 字</span></span>
+        <span class="summary-badges">${summaryStatusHtml(chapter.index, run)}${badges.join('')}<span>${formatNumber(chapter.chars)} 字</span></span>
       </div>
-      <textarea class="textarea summary-text" rows="3" data-summary-index="${chapter.index}" ${disabled ? 'disabled' : ''} placeholder="${empty ? '这一章还没有正文' : '还没有摘要'}">${escapeHtml(chapter.summary || '')}</textarea>
+      <textarea class="textarea summary-text" rows="3" data-summary-index="${chapter.index}" ${controlsDisabled ? 'disabled' : ''} placeholder="${empty ? '这一章还没有正文' : '还没有摘要'}">${escapeHtml(chapter.summary || '')}</textarea>
       ${summaryTagHtml(chapter.tags, chapter.index, disabled)}
       <div class="summary-item-actions">
-        <button class="text-btn" type="button" data-summary-regenerate="${chapter.index}" ${disabled ? 'disabled' : ''}>重新生成</button>
+        <button class="text-btn" type="button" data-summary-regenerate="${chapter.index}" ${controlsDisabled ? 'disabled' : ''}>重新生成</button>
       </div>
     </div>`);
   }
@@ -228,7 +333,10 @@ function renderSummaryList() {
     const orphans = state.summaryOrphans.map((item) => `<div class="summary-orphan">
       <div class="summary-head">
         <span class="summary-title">${escapeHtml(item.title || '未命名')}</span>
-        <span class="summary-badges"><span class="summary-badge">未匹配</span></span>
+        <span class="summary-badges">
+          <span class="summary-badge">未匹配</span>
+          <button class="text-btn summary-orphan-del" type="button" data-orphan-delete="1" data-orphan-title="${escapeHtml(item.title || '')}" data-orphan-at="${escapeHtml(item.at || '')}" data-orphan-hash="${escapeHtml(item.sourceHash || '')}">删除</button>
+        </span>
       </div>
       <p>${escapeHtml(item.summary || '')}</p>
     </div>`).join('');
@@ -237,8 +345,18 @@ function renderSummaryList() {
 
   list.innerHTML = html.join('');
 
+  const staleCount = chapters.filter((chapter) => chapter.stale
+    && chapter.hasSummary
+    && chapter.chars > 0
+    && String(chapter.summary || '').trim()).length;
+  const staleButton = $('#summary-regenerate-stale');
+  if (staleButton) {
+    staleButton.disabled = busy || !enabled || !staleCount;
+    staleButton.textContent = staleCount ? `重生成过期 (${staleCount})` : '重生成过期';
+  }
+  const pendingSet = state.summaryPending.get(book.meta.id);
   const generate = $('#summary-generate-missing');
-  if (generate) generate.disabled = busy || !enabled;
+  if (generate) generate.disabled = busy || !enabled || Boolean(pendingSet?.size);
   const stop = $('#summary-stop');
   if (stop) stop.hidden = !busy;
 }
@@ -279,15 +397,10 @@ async function loadSummaries() {
 export function openSummaryDialog() {
   const book = state.current;
   if (!book) return;
-  const pending = state.summaryPending.get(book.meta.id);
-  if (pending?.size) {
-    toast('摘要生成中，稍等', 'info');
-    return;
-  }
   const dialog = $('#summary-dialog');
   if (!dialog) return;
 
-  state.summaryStop = false;
+  if (!state.summaryBusy) state.summaryStop = false;
   for (const timer of state.summaryTimers.values()) clearTimeout(timer);
   state.summaryTimers.clear();
 
@@ -336,6 +449,7 @@ async function saveSummary(index) {
     latest.source = 'user';
     latest.at = summary.at || latest.at;
     latest.hasSummary = true;
+    setSummaryRun(bookId, index, null);
     updateSummaryEntry(latest);
 
     const item = document.querySelector(`#summary-list [data-summary-item="${index}"]`);
@@ -366,7 +480,12 @@ export async function flushSummaryTimers() {
   await Promise.all(indexes.map((index) => saveSummary(index)));
 }
 
-export async function regenerateSummary(index, { confirmUser = true, allowBusy = false, silent = false } = {}) {
+export async function regenerateSummary(index, {
+  confirmUser = true,
+  allowBusy = false,
+  silent = false,
+  retries = 0,
+} = {}) {
   const book = state.current;
   const chapter = state.summaryChapters.find((item) => item.index === index);
   if (!book || !chapter) return { ok: false, error: '章节不存在' };
@@ -381,28 +500,139 @@ export async function regenerateSummary(index, { confirmUser = true, allowBusy =
     if (!ok) return { ok: false, error: '已取消' };
   }
 
-  try {
-    const { summary } = await api(`/books/${encodeURIComponent(book.meta.id)}/summaries/generate`, {
-      method: 'POST',
-      body: { index },
-    });
-    if (state.summaryBookId !== book.meta.id) return { ok: false, error: '已切换书籍' };
-
-    Object.assign(chapter, {
-      summary: String(summary.summary || ''),
-      tags: summary.tags || {},
-      source: 'ai',
-      at: summary.at || '',
-      hasSummary: true,
-      stale: false,
-    });
-    updateSummaryEntry(chapter);
-    if (!state.summaryBusy) renderSummaryList();
-    return { ok: true };
-  } catch (err) {
-    if (!silent) toast(err.message || '摘要生成失败', 'error');
-    return { ok: false, error: err.message || '摘要生成失败' };
+  const bookId = book.meta.id;
+  const timer = state.summaryTimers.get(index);
+  if (timer) {
+    clearTimeout(timer);
+    state.summaryTimers.delete(index);
   }
+
+  const maxAttempts = 1 + Math.max(0, Math.trunc(Number(retries) || 0));
+  let lastError = '';
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (state.summaryBookId !== bookId || state.current?.meta.id !== bookId) {
+      setSummaryRun(bookId, index, null);
+      return { ok: false, error: '已切换书籍', attempts: attempt - 1 };
+    }
+
+    setSummaryRun(bookId, index, {
+      status: attempt === 1 ? 'generating' : 'retrying',
+      attempt,
+      error: lastError,
+    });
+
+    try {
+      const { summary } = await api(`/books/${encodeURIComponent(bookId)}/summaries/generate`, {
+        method: 'POST',
+        body: { index },
+      });
+      if (state.summaryBookId !== bookId || state.current?.meta.id !== bookId) {
+        setSummaryRun(bookId, index, null);
+        return { ok: false, error: '已切换书籍', attempts: attempt };
+      }
+
+      const latest = state.summaryChapters.find((item) => item.index === index);
+      if (!latest) {
+        setSummaryRun(bookId, index, null);
+        return { ok: false, error: '章节已经变化', attempts: attempt };
+      }
+      Object.assign(latest, {
+        summary: String(summary.summary || ''),
+        tags: summary.tags || {},
+        source: 'ai',
+        at: summary.at || '',
+        hasSummary: true,
+        stale: false,
+      });
+      updateSummaryEntry(latest);
+      setSummaryRun(bookId, index, null);
+      if (!state.summaryBusy && state.summaryBookId === bookId) renderSummaryList();
+      return { ok: true, attempts: attempt, retried: attempt > 1 };
+    } catch (err) {
+      lastError = err.message || '摘要生成失败';
+      if (attempt < maxAttempts
+        && !state.summaryStop
+        && state.summaryBookId === bookId
+        && isRetryableSummaryError(err)) {
+        setSummaryRun(bookId, index, {
+          status: 'retrying',
+          attempt: attempt + 1,
+          error: lastError,
+        });
+        await wait(SUMMARY_RETRY_DELAY);
+        if (state.summaryStop) {
+          setSummaryRun(bookId, index, null);
+          return { ok: false, error: '已停止', attempts: attempt, retried: true };
+        }
+        continue;
+      }
+      setSummaryRun(bookId, index, {
+        status: 'failed',
+        attempt,
+        error: lastError,
+      });
+      if (!silent) toast(lastError, 'error');
+      return { ok: false, error: lastError, attempts: attempt, retried: attempt > 1 };
+    }
+  }
+
+  return { ok: false, error: lastError || '摘要生成失败', attempts: maxAttempts };
+}
+
+async function runSummaryPool({
+  bookId,
+  targets,
+  concurrency,
+  retries = 0,
+  label,
+  shouldRun = null,
+}) {
+  let cursor = 0;
+  let done = 0;
+  let failed = 0;
+  let retried = 0;
+  let active = 0;
+  let firstError = '';
+  const total = targets.length;
+
+  const worker = async () => {
+    for (;;) {
+      if (state.summaryStop || state.current?.meta.id !== bookId || state.summaryBookId !== bookId) return;
+      const position = cursor;
+      cursor += 1;
+      if (position >= total) return;
+
+      const chapter = targets[position];
+      const latest = state.summaryChapters.find((item) => item.index === chapter.index);
+      if (!latest) continue;
+      if (shouldRun && !shouldRun(latest)) {
+        setSummaryRun(bookId, chapter.index, null);
+        done += 1;
+        continue;
+      }
+
+      active += 1;
+      updateSummaryHint(`${label} ${done}/${total} · 进行中 ${active}${retried ? ` · 重试 ${retried}` : ''}`);
+      const result = await regenerateSummary(latest.index, {
+        confirmUser: false,
+        allowBusy: true,
+        silent: true,
+        retries,
+      });
+
+      active -= 1;
+      if (result.ok) done += 1;
+      else {
+        failed += 1;
+        if (!firstError) firstError = result.error || '';
+      }
+      if (result.retried) retried += 1;
+      updateSummaryHint(`${label} ${done}/${total} · 进行中 ${active}${retried ? ` · 重试 ${retried}` : ''}`);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, total) }, () => worker()));
+  return { done, failed, retried, total, firstError };
 }
 
 export async function backfillSummaries() {
@@ -411,7 +641,9 @@ export async function backfillSummaries() {
   const bookId = book.meta.id;
 
   await flushSummaryTimers();
+  const pending = state.summaryPending.get(bookId) || new Set();
   const targets = state.summaryChapters.filter((chapter) => chapter.chars > 0
+    && !pending.has(chapter.index)
     && (!chapter.hasSummary || !String(chapter.summary || '').trim())
     && chapter.source !== 'user');
 
@@ -427,53 +659,138 @@ export async function backfillSummaries() {
   const poolSize = Math.min(SUMMARY_CONCURRENCY, targets.length);
   updateSummaryHint(`补齐中 0/${targets.length} · 并发 ${poolSize}`);
 
-  let cursor = 0;
-  let done = 0;
-  let failed = 0;
-  let active = 0;
-  let firstError = '';
-
-  const worker = async () => {
-    for (;;) {
-      if (state.summaryStop || state.current?.meta.id !== bookId) return;
-      const position = cursor;
-      cursor += 1;
-      if (position >= targets.length) return;
-
-      const chapter = targets[position];
-      active += 1;
-      updateSummaryHint(`补齐中 ${done}/${targets.length} · 进行中 ${active}`);
-
-      const result = await regenerateSummary(chapter.index, {
-        confirmUser: false,
-        allowBusy: true,
-        silent: true,
-      });
-
-      active -= 1;
-      if (result.ok) {
-        done += 1;
-      } else {
-        failed += 1;
-        if (!firstError) firstError = result.error || '';
-      }
-      updateSummaryHint(`补齐中 ${done}/${targets.length} · 进行中 ${active}`);
-    }
-  };
-
-  await Promise.all(Array.from({ length: poolSize }, () => worker()));
+  const result = await runSummaryPool({
+    bookId,
+    targets,
+    concurrency: SUMMARY_CONCURRENCY,
+    label: '补齐中',
+    shouldRun: (chapter) => chapter.chars > 0
+      && !pending.has(chapter.index)
+      && (!chapter.hasSummary || !String(chapter.summary || '').trim())
+      && chapter.source !== 'user',
+  });
 
   const stopped = state.summaryStop;
   state.summaryBusy = false;
   state.summaryStop = false;
   if (state.current?.meta.id === bookId) {
     renderSummaryList();
-    const suffix = failed ? ` · 失败 ${failed}` : '';
+    const suffix = result.failed ? ` · 失败 ${result.failed}` : '';
     updateSummaryHint(stopped
-      ? `已停止 · 完成 ${done}/${targets.length}${suffix}`
-      : `补齐完成 ${done}/${targets.length}${suffix}`);
+      ? `已停止 · 完成 ${result.done}/${result.total}${suffix}`
+      : `补齐完成 ${result.done}/${result.total}${suffix}`);
   }
-  if (failed) {
-    toast(`有 ${failed} 章摘要没生成成功${firstError ? `：${firstError}` : ''}`, 'warn', 5000);
+  if (result.failed) {
+    toast(`有 ${result.failed} 章摘要没生成成功${result.firstError ? `：${result.firstError}` : ''}`, 'warn', 5000);
+  }
+}
+
+export async function regenerateStaleSummaries() {
+  const book = state.current;
+  if (!book) return;
+  if (state.summaryBusy) {
+    toast('摘要任务正在跑，稍等', 'info');
+    return;
+  }
+
+  const bookId = book.meta.id;
+  await flushSummaryTimers();
+  const targets = state.summaryChapters.filter((chapter) => chapter.stale
+    && chapter.hasSummary
+    && chapter.chars > 0
+    && String(chapter.summary || '').trim());
+
+  if (!targets.length) {
+    toast('没有可能过期的摘要', 'info');
+    return;
+  }
+
+  const userCount = targets.filter((chapter) => chapter.source === 'user').length;
+  const ok = await confirmDialog({
+    title: '重新生成可能过期的摘要',
+    text: `将重新生成 ${targets.length} 条可能过期的摘要${userCount ? `，其中 ${userCount} 条是你手改过的，会被覆盖` : ''}。继续？`,
+    okLabel: '开始生成',
+  });
+  if (!ok) return;
+
+  state.summaryBusy = true;
+  state.summaryStop = false;
+  for (const chapter of targets) {
+    setSummaryRun(bookId, chapter.index, { status: 'queued', attempt: 1, error: '' });
+  }
+  renderSummaryList();
+
+  const poolSize = Math.min(SUMMARY_STALE_CONCURRENCY, targets.length);
+  updateSummaryHint(`重生成过期 0/${targets.length} · 并发 ${poolSize}`);
+  const result = await runSummaryPool({
+    bookId,
+    targets,
+    concurrency: SUMMARY_STALE_CONCURRENCY,
+    retries: 1,
+    label: '重生成过期',
+    shouldRun: (chapter) => chapter.stale
+      && chapter.hasSummary
+      && chapter.chars > 0
+      && String(chapter.summary || '').trim(),
+  });
+
+  const stopped = state.summaryStop;
+  state.summaryBusy = false;
+  state.summaryStop = false;
+  if (state.current?.meta.id === bookId) {
+    renderSummaryList();
+    const suffix = result.failed ? ` · 失败 ${result.failed}` : '';
+    const retried = result.retried ? ` · 重试 ${result.retried}` : '';
+    updateSummaryHint(stopped
+      ? `已停止 · 完成 ${result.done}/${result.total}${retried}${suffix}`
+      : `重生成完成 ${result.done}/${result.total}${retried}${suffix}`);
+  }
+  if (result.failed) {
+    toast(`有 ${result.failed} 条过期摘要没生成成功${result.firstError ? `：${result.firstError}` : ''}`, 'warn', 5000);
+  }
+}
+
+export async function deleteSummaryOrphan({ title = '', at = '', sourceHash = '' } = {}) {
+  const book = state.current;
+  if (!book) return;
+  const ok = await confirmDialog({
+    title: '删除未匹配的旧摘要',
+    text: `删除「${title || '未命名'}」这条旧摘要？删除后不会影响正文和现有章节摘要。`,
+    okLabel: '删除',
+  });
+  if (!ok) return;
+
+  const bookId = book.meta.id;
+  try {
+    const data = await api(`/books/${encodeURIComponent(bookId)}/summaries/orphans`, {
+      method: 'DELETE',
+      body: { title, at, sourceHash },
+    });
+    if (state.current?.meta.id !== bookId) return;
+    if (!data.deleted) {
+      toast('没有找到这条旧摘要，已经刷新列表', 'info');
+      await loadSummaries();
+      return;
+    }
+
+    state.summaryOrphans = Array.isArray(data.orphans)
+      ? data.orphans
+      : state.summaryOrphans.filter((item) => !(String(item.title || '') === title
+        && String(item.at || '') === at
+        && String(item.sourceHash || '') === sourceHash));
+    if (Array.isArray(book.summaries)) {
+      book.summaries = [
+        ...book.summaries.filter((item) => item.index !== null),
+        ...state.summaryOrphans,
+      ];
+    }
+
+    const listEl = $('#summary-list');
+    const scrollTop = listEl?.scrollTop || 0;
+    renderSummaryList();
+    if (listEl) listEl.scrollTop = scrollTop;
+    toast(`已删除 ${data.deleted} 条未匹配摘要`, 'success');
+  } catch (err) {
+    toast(err.message || '删除旧摘要失败', 'error');
   }
 }

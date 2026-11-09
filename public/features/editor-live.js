@@ -7,6 +7,7 @@ import {
   ViewPlugin,
   syntaxTree,
 } from '../vendor/codemirror.js';
+import { findTables, tableAt } from './editor-tables.js';
 
 class VoidBlockWidget extends WidgetType {
   toDOM() {
@@ -64,6 +65,9 @@ function buildDecorations(view) {
   const ranges = view.visibleRanges.length ? view.visibleRanges : [{ from: 0, to: doc.length }];
   const decorations = [];
   const lineMap = new Map();
+  const gridTables = findTables(doc).filter((table) => (
+    !selectionTouches(cs, table.from, table.to)
+  ));
   let firstParagraph = null;
 
   const addLine = (pos, value, attributes = null) => {
@@ -264,11 +268,13 @@ function buildDecorations(view) {
         }
 
         if (node.name === 'TableHeader' || node.name === 'TableRow') {
+          if (tableAt(gridTables, node.from)) return;
           addLine(node.from, 'cm-md-table-line');
           return;
         }
 
         if (node.name === 'TableDelimiter' && source.parent?.name === 'Table') {
+          if (tableAt(gridTables, node.from)) return;
           const line = doc.lineAt(node.from);
           addLine(line.from, 'cm-md-table-sep');
           if (selectionTouches(cs, line.from, line.to)) {

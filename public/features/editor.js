@@ -16,6 +16,7 @@ import {
   placeholder,
 } from '../vendor/codemirror.js';
 import { livePreview, selectionPlainText, titleBlock } from './editor-live.js';
+import { tableBlocks } from './editor-tables.js';
 
 let view = null;
 let bookId = '';
@@ -111,6 +112,7 @@ export function mountEditor(prose, book, { onScroll = null } = {}) {
         EditorView.lineWrapping,
         markdown({ base: markdownLanguage }),
         titleBlock,
+        tableBlocks,
         livePreview,
         editorTheme,
         EditorView.updateListener.of(handleUpdate),

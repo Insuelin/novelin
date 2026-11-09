@@ -236,13 +236,21 @@ export function editorSelectText(query) {
 export function editorScrollTo(offset) {
   if (!view) return false;
   const pos = Math.max(0, Math.min(view.state.doc.length, Number(offset) || 0));
-  const top = Math.max(0, view.lineBlockAt(pos).top - 12);
-  view.scrollDOM.scrollTo({ top, behavior: 'smooth' });
+  view.dispatch({
+    effects: EditorView.scrollIntoView(pos, {
+      y: pos >= view.state.doc.length ? 'end' : 'start',
+      yMargin: 12,
+    }),
+  });
   return true;
 }
 
 export function editorScrollTop() {
   return view?.scrollDOM.scrollTop || 0;
+}
+
+export function editorScroller() {
+  return view?.scrollDOM || null;
 }
 
 export function editorLineTop(offset) {

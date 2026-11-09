@@ -1,5 +1,14 @@
 import { state } from '../core/state.js';
 import { $ } from '../core/dom.js';
+import { editorIsActive, editorScroller } from './editor.js';
+
+function scrollHost() {
+  if (editorIsActive()) {
+    const scroller = editorScroller();
+    if (scroller) return scroller;
+  }
+  return $('.manuscript');
+}
 
 function clusterRulerTops(values, tolerance) {
   const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
@@ -69,15 +78,34 @@ function rulerLineSpan(element, geometry) {
   return { start: Math.min(...indices), end: Math.max(...indices) };
 }
 
+function syncRulerBox(ruler, wrap) {
+  if (editorIsActive()) {
+    const host = editorScroller();
+    if (!host) return;
+    const wrapRect = wrap.getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
+    ruler.style.top = `${Math.max(0, hostRect.top - wrapRect.top) + 1}px`;
+    ruler.style.bottom = 'auto';
+    ruler.style.height = `${Math.max(24, host.clientHeight - 2)}px`;
+  } else {
+    ruler.style.top = '1px';
+    ruler.style.bottom = '1px';
+    ruler.style.height = '';
+  }
+}
+
 function layoutRulerThumb() {
   const wrap = document.querySelector('.ms-wrap');
-  const ms = $('.manuscript');
   const ruler = $('#diff-ruler');
   const thumb = $('#diff-ruler-thumb');
-  if (!wrap?.classList.contains('ruler-on') || !ms || !ruler || !thumb) return;
+  if (!wrap?.classList.contains('ruler-on') || !ruler || !thumb) return;
 
-  const total = ms.scrollHeight;
-  const viewport = ms.clientHeight;
+  syncRulerBox(ruler, wrap);
+  const host = scrollHost();
+  if (!host) return;
+
+  const total = host.scrollHeight;
+  const viewport = host.clientHeight;
   const height = ruler.clientHeight;
   if (!total || !viewport || !height) return;
   const maxScroll = Math.max(1, total - viewport);
@@ -86,11 +114,12 @@ function layoutRulerThumb() {
     : Math.max(24, Math.round((viewport / total) * height));
   const thumbTop = total <= viewport
     ? 0
-    : Math.round((ms.scrollTop / maxScroll) * (height - thumbHeight));
+    : Math.round((host.scrollTop / maxScroll) * (height - thumbHeight));
 
+  thumb.hidden = total <= viewport + 1;
   thumb.style.height = `${thumbHeight}px`;
   thumb.style.top = `${thumbTop}px`;
-  thumb.setAttribute('aria-valuenow', String(Math.round((ms.scrollTop / maxScroll) * 100)));
+  thumb.setAttribute('aria-valuenow', String(Math.round((host.scrollTop / maxScroll) * 100)));
 }
 
 function renderRuler() {
@@ -99,7 +128,13 @@ function renderRuler() {
   const marks = $('#diff-ruler-marks');
   if (!wrap?.classList.contains('ruler-on') || !ruler || !marks) return;
 
+  syncRulerBox(ruler, wrap);
   marks.innerHTML = '';
+  if (editorIsActive()) {
+    layoutRulerThumb();
+    return;
+  }
+
   const geometry = rulerGeometry();
   if (!geometry || !geometry.tops.length) {
     layoutRulerThumb();
@@ -176,8 +211,7 @@ export function setRulerEnabled() {
   const ruler = $('#diff-ruler');
   if (!wrap || !ruler) return;
   const singleColumn = window.matchMedia('(max-width: 1080px)').matches;
-  const editorMode = document.querySelector('.manuscript')?.classList.contains('editor-mode');
-  const enabled = Boolean(state.current) && !singleColumn && !editorMode;
+  const enabled = Boolean(state.current) && !singleColumn;
   wrap.classList.toggle('ruler-on', enabled);
   ruler.hidden = !enabled;
   if (enabled) {
@@ -200,8 +234,9 @@ export function wireDiffRuler() {
   const ruler = $('#diff-ruler');
   const thumb = $('#diff-ruler-thumb');
   const ms = $('.manuscript');
+  const wrap = document.querySelector('.ms-wrap');
   const prose = $('#prose');
-  if (!ruler || !thumb || !ms || !prose) return;
+  if (!ruler || !thumb || !ms || !wrap || !prose) return;
 
   let drag = null;
   thumb.addEventListener('pointerdown', (event) => {
@@ -209,15 +244,17 @@ export function wireDiffRuler() {
     showRulerThumb();
     thumb.setPointerCapture(event.pointerId);
     thumb.classList.add('dragging');
-    drag = { startY: event.clientY, startScroll: ms.scrollTop };
+    drag = { startY: event.clientY, startScroll: scrollHost()?.scrollTop || 0 };
   });
   thumb.addEventListener('pointermove', (event) => {
     if (!drag) return;
+    const host = scrollHost();
+    if (!host) return;
     const height = ruler.clientHeight;
-    const maxScroll = Math.max(1, ms.scrollHeight - ms.clientHeight);
+    const maxScroll = Math.max(1, host.scrollHeight - host.clientHeight);
     const travel = Math.max(1, height - thumb.offsetHeight);
     const delta = ((event.clientY - drag.startY) / travel) * maxScroll;
-    ms.scrollTop = Math.max(0, Math.min(maxScroll, drag.startScroll + delta));
+    host.scrollTop = Math.max(0, Math.min(maxScroll, drag.startScroll + delta));
   });
   const endDrag = (event) => {
     if (!drag) return;
@@ -231,11 +268,13 @@ export function wireDiffRuler() {
   thumb.addEventListener('pointercancel', endDrag);
 
   ruler.addEventListener('click', (event) => {
+    const host = scrollHost();
+    if (!host) return;
     const mark = event.target.closest('.diff-ruler-mark');
     if (mark) {
       const target = Number(mark.dataset.scroll) || 0;
-      ms.scrollTo({
-        top: Math.max(0, target - ms.clientHeight / 2),
+      host.scrollTo({
+        top: Math.max(0, target - host.clientHeight / 2),
         behavior: 'smooth',
       });
       return;
@@ -243,19 +282,24 @@ export function wireDiffRuler() {
     if (event.target.closest('.diff-ruler-thumb')) return;
     const rect = ruler.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
-    ms.scrollTo({ top: ratio * ms.scrollHeight - ms.clientHeight / 2, behavior: 'smooth' });
+    const maxScroll = Math.max(0, host.scrollHeight - host.clientHeight);
+    const top = Math.max(0, Math.min(maxScroll, ratio * host.scrollHeight - host.clientHeight / 2));
+    if (editorIsActive()) host.scrollTop = top;
+    else host.scrollTo({ top, behavior: 'smooth' });
   });
 
   let scrollFrame = 0;
-  ms.addEventListener('scroll', () => {
+  document.addEventListener('scroll', (event) => {
+    const host = scrollHost();
+    if (!host || event.target !== host) return;
     showRulerThumb();
     if (scrollFrame) return;
     scrollFrame = requestAnimationFrame(() => {
       scrollFrame = 0;
       layoutRulerThumb();
     });
-  });
-  ms.addEventListener('focus', showRulerThumb);
+  }, true);
+  wrap.addEventListener('focusin', showRulerThumb);
   prose.addEventListener('input', scheduleRulerRender);
   window.addEventListener('resize', () => {
     setRulerEnabled();

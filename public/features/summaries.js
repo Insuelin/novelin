@@ -181,6 +181,74 @@ function normalizeSummaryTags(tags) {
   return out;
 }
 
+function summaryBadges(chapter) {
+  const missing = !chapter.hasSummary || !String(chapter.summary || '').trim();
+  if (missing) return '<span class="summary-badge missing">缺失</span>';
+  const stale = chapter.stale ? '<span class="summary-badge stale">可能过期</span>' : '';
+  const source = chapter.source === 'user'
+    ? '<span class="summary-badge user">用户</span>'
+    : '<span class="summary-badge">AI</span>';
+  return `${stale}${source}`;
+}
+
+function summaryStaleTargets() {
+  return state.summaryChapters.filter((chapter) => chapter.stale
+    && chapter.hasSummary
+    && chapter.chars > 0
+    && String(chapter.summary || '').trim());
+}
+
+function updateStaleButton() {
+  const staleButton = $('#summary-regenerate-stale');
+  if (!staleButton) return;
+  const count = summaryStaleTargets().length;
+  staleButton.disabled = state.summaryBusy || !state.current?.meta.aiEnabled || !count;
+  staleButton.textContent = count ? `重生成过期 (${count})` : '重生成过期';
+}
+
+function updateSummaryItemContent(index) {
+  const chapter = state.summaryChapters.find((entry) => entry.index === index);
+  if (!chapter) return;
+  updateStaleButton();
+
+  const item = document.querySelector(`#summary-list [data-summary-item="${index}"]`);
+  if (!item) return;
+  const run = getSummaryRun(state.summaryBookId, index);
+  if (run?.status === 'failed') return;
+
+  const list = $('#summary-list');
+  const scrollTop = list?.scrollTop || 0;
+
+  const badges = item.querySelector('.summary-badges');
+  if (badges) {
+    const status = badges.querySelector('[data-summary-status]');
+    for (const badge of badges.querySelectorAll('.summary-badge')) badge.remove();
+    const holder = document.createElement('span');
+    holder.innerHTML = summaryBadges(chapter);
+    const nodes = [...holder.childNodes];
+    if (status) status.after(...nodes);
+    else badges.prepend(...nodes);
+  }
+
+  const textarea = item.querySelector('.summary-text');
+  if (textarea) {
+    textarea.value = String(chapter.summary || '');
+    textarea.placeholder = chapter.chars ? '还没有摘要' : '这一章还没有正文';
+  }
+
+  const disabled = state.summaryBusy || !chapter.chars || !state.current?.meta.aiEnabled;
+  const tagsHtml = summaryTagHtml(chapter.tags, chapter.index, disabled);
+  const tagsEl = item.querySelector('.summary-tags');
+  if (tagsEl) {
+    if (tagsHtml) tagsEl.outerHTML = tagsHtml;
+    else tagsEl.remove();
+  } else if (tagsHtml && textarea) {
+    textarea.insertAdjacentHTML('afterend', tagsHtml);
+  }
+
+  if (list) list.scrollTop = scrollTop;
+}
+
 function summaryTagHtml(tags, chapterIndex, disabled = false) {
   const chips = [];
   for (const [key, label] of Object.entries(SUMMARY_TAG_LABELS)) {
@@ -301,14 +369,7 @@ function renderSummaryList() {
   }
 
   for (const chapter of chapters) {
-    const missing = !chapter.hasSummary || !String(chapter.summary || '').trim();
-    const badges = [];
-    if (missing) {
-      badges.push('<span class="summary-badge missing">缺失</span>');
-    } else {
-      if (chapter.stale) badges.push('<span class="summary-badge stale">可能过期</span>');
-      badges.push(`<span class="summary-badge ${chapter.source === 'user' ? 'user' : ''}">${chapter.source === 'user' ? '用户' : 'AI'}</span>`);
-    }
+    const badges = summaryBadges(chapter);
 
     const empty = !chapter.chars;
     const disabled = busy || empty || !enabled;
@@ -319,7 +380,7 @@ function renderSummaryList() {
       <div class="summary-head">
         <span class="summary-no">CH ${pad2(chapter.index)}</span>
         <span class="summary-title">${escapeHtml(chapter.title)}</span>
-        <span class="summary-badges">${summaryStatusHtml(chapter.index, run)}${badges.join('')}<span>${formatNumber(chapter.chars)} 字</span></span>
+        <span class="summary-badges">${summaryStatusHtml(chapter.index, run)}${badges}<span>${formatNumber(chapter.chars)} 字</span></span>
       </div>
       <textarea class="textarea summary-text" rows="3" data-summary-index="${chapter.index}" ${controlsDisabled ? 'disabled' : ''} placeholder="${empty ? '这一章还没有正文' : '还没有摘要'}">${escapeHtml(chapter.summary || '')}</textarea>
       ${summaryTagHtml(chapter.tags, chapter.index, disabled)}
@@ -345,15 +406,7 @@ function renderSummaryList() {
 
   list.innerHTML = html.join('');
 
-  const staleCount = chapters.filter((chapter) => chapter.stale
-    && chapter.hasSummary
-    && chapter.chars > 0
-    && String(chapter.summary || '').trim()).length;
-  const staleButton = $('#summary-regenerate-stale');
-  if (staleButton) {
-    staleButton.disabled = busy || !enabled || !staleCount;
-    staleButton.textContent = staleCount ? `重生成过期 (${staleCount})` : '重生成过期';
-  }
+  updateStaleButton();
   const pendingSet = state.summaryPending.get(book.meta.id);
   const generate = $('#summary-generate-missing');
   if (generate) generate.disabled = busy || !enabled || Boolean(pendingSet?.size);
@@ -546,7 +599,10 @@ export async function regenerateSummary(index, {
       });
       updateSummaryEntry(latest);
       setSummaryRun(bookId, index, null);
-      if (!state.summaryBusy && state.summaryBookId === bookId) renderSummaryList();
+      if (state.summaryBookId === bookId) {
+        updateSummaryItemContent(index);
+        if (!state.summaryBusy) renderSummaryList();
+      }
       return { ok: true, attempts: attempt, retried: attempt > 1 };
     } catch (err) {
       lastError = err.message || '摘要生成失败';

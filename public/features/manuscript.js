@@ -34,7 +34,7 @@ export function renderProse() {
   if (!source.trim() && !review) {
     state.proseBlocks = [];
     state.proseFallback = true;
-    prose.innerHTML = '<div class="prose-empty" data-block-append>正文还是空的。双击这里开始写第一段。</div>';
+    prose.innerHTML = '<div class="prose-empty" data-block-append>正文还是空的。单击这里开始写第一段。</div>';
     if (tail) tail.hidden = true;
     state.chapterEls = [];
     refreshChapterNav();

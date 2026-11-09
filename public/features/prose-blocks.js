@@ -11,7 +11,7 @@ function fallbackFragment(source, marked) {
 
 /**
  * 把一篇 Markdown 渲染成可直接放进 #prose 的 DocumentFragment。
- * 每个顶层元素带 data-block-* 属性；fallback 时没有任何块属性，双击编辑自然失效。
+ * 每个顶层元素带 data-block-* 属性；fallback 时没有任何块属性，单击编辑自然失效。
  */
 export function renderProseBlocks(source, marked) {
   const analysis = analyzeBlocks(source, marked);

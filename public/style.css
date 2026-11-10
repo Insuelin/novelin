@@ -800,7 +800,7 @@ input[type="range"]::-moz-range-thumb{
 .setting-value{justify-self:end;padding:5px 9px;border:1px solid var(--line);background:rgba(0,0,0,.24);color:var(--text);font-family:var(--mono);font-size:8px;letter-spacing:.12em;transition:border-color .2s,color .2s}
 .setting-value:hover{border-color:var(--accent-line);color:var(--accent)}
 .setting-value:disabled{opacity:.45;cursor:not-allowed}
-.log-panel{flex:1 1 auto;display:flex;flex-direction:column;margin:0;padding:10px 16px 0;background:linear-gradient(180deg,rgba(9,9,9,.28),rgba(9,9,9,.08));min-height:140px;overflow:hidden}
+.log-panel{flex:1 1 0;display:flex;flex-direction:column;margin:0;padding:10px 16px 0;background:linear-gradient(180deg,rgba(9,9,9,.28),rgba(9,9,9,.08));min-height:140px;overflow:hidden}
 .log-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;font-family:var(--mono);font-size:8px;letter-spacing:.16em;color:var(--dim)}
 .log-head > span:first-child{color:var(--accent)}
 .log-level{

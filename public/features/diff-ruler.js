@@ -100,6 +100,13 @@ function syncRulerBox(ruler, wrap) {
   }
 }
 
+// CM6 会在滚动时重新测量离屏行，scrollHeight 会小幅变化。
+// 锁定滑块上下边界，避免它跟着测量结果反向抖动。
+let thumbHost = null;
+let thumbTop = 0;
+let thumbBottom = 0;
+let thumbScrollTop = 0;
+
 function layoutRulerThumb() {
   const wrap = document.querySelector('.ms-wrap');
   const ruler = $('#diff-ruler');
@@ -118,13 +125,25 @@ function layoutRulerThumb() {
   const thumbHeight = total <= viewport
     ? height
     : Math.max(24, Math.round((viewport / total) * height));
-  const thumbTop = total <= viewport
+  let top = total <= viewport
     ? 0
     : Math.round((host.scrollTop / maxScroll) * (height - thumbHeight));
 
+  if (thumbHost !== host) {
+    thumbHost = host;
+  } else {
+    const down = host.scrollTop > thumbScrollTop + 0.5;
+    const up = host.scrollTop < thumbScrollTop - 0.5;
+    if (down) top = Math.max(top, thumbTop, thumbBottom - thumbHeight);
+    if (up) top = Math.min(top, thumbTop, thumbBottom - thumbHeight);
+  }
+  thumbTop = top;
+  thumbBottom = top + thumbHeight;
+  thumbScrollTop = host.scrollTop;
+
   thumb.hidden = total <= viewport + 1;
   thumb.style.height = `${thumbHeight}px`;
-  thumb.style.top = `${thumbTop}px`;
+  thumb.style.top = `${top}px`;
   thumb.setAttribute('aria-valuenow', String(Math.round((host.scrollTop / maxScroll) * 100)));
 }
 

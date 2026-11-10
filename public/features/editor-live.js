@@ -58,6 +58,13 @@ function marker(kind, side, level = '') {
   return Decoration.mark({ class: 'cm-md-mark-visible', attributes });
 }
 
+function firstDocumentParagraph(state) {
+  for (let node = syntaxTree(state).topNode.firstChild; node; node = node.nextSibling) {
+    if (node.name === 'Paragraph') return node.from;
+  }
+  return null;
+}
+
 function buildDecorations(view) {
   const cs = view.state;
   const doc = cs.doc;
@@ -68,7 +75,10 @@ function buildDecorations(view) {
   const gridTables = findTables(doc).filter((table) => (
     !selectionTouches(cs, table.from, table.to)
   ));
-  let firstParagraph = null;
+  const firstParagraph = firstDocumentParagraph(cs);
+  const firstParagraphVisible = firstParagraph !== null && ranges.some((range) => (
+    firstParagraph >= range.from && firstParagraph < range.to
+  ));
 
   const addLine = (pos, value, attributes = null) => {
     if (!doc.length) return;
@@ -316,15 +326,11 @@ function buildDecorations(view) {
           }
           return false;
         }
-
-        if (node.name === 'Paragraph' && source.parent?.name === 'Document' && firstParagraph === null) {
-          firstParagraph = node.from;
-        }
       },
     });
   }
 
-  if (firstParagraph !== null) {
+  if (firstParagraphVisible) {
     addLine(firstParagraph, 'cm-md-lead');
     const firstChar = doc.sliceString(firstParagraph, Math.min(doc.length, firstParagraph + 1));
     if (firstChar && /[\p{L}\p{N}]/u.test(firstChar)) {

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>NOVELIN — Materials UI Demo</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/material-library/demo.css">
+</head>
+<body class="demo-page">
+  <main class="demo-shell">
+    <header class="demo-bar">
+      <div>
+        <div class="eyebrow">NOVELIN / LAB · DEMO B</div>
+        <h1>资料库与触发词</h1>
+        <p>纯前端演示：资料库弹窗、触发词编辑、指令命中提示和手动选择资料。数据只存在当前页面，不请求后端，不调用模型。</p>
+      </div>
+      <div class="demo-badge">DEMO · NO BACKEND</div>
+    </header>
+
+    <div class="library-demo">
+      <section class="demo-stage" aria-label="模拟写作台">
+        <div class="demo-stage-head">
+          <span><b>WORKSPACE</b> / MOCK</span>
+          <span>MATERIALS / 资料</span>
+        </div>
+        <div class="demo-toolbar ms-toolbar">
+          <button class="btn ghost small" type="button" disabled>用词 / TERMS</button>
+          <button class="btn ghost small" type="button" disabled>情节审查 / AUDIT</button>
+          <button class="btn ghost small" type="button" id="materials-btn">资料 / MATERIALS</button>
+        </div>
+        <article class="demo-manuscript">
+          <h2>第一章 · 窗边的果茶</h2>
+          <p>雾从海上进来。她把杯子放在窗台上，杯壁的水珠顺着玻璃往下滑。</p>
+          <p>“你要不要试试我新做的<mark>果茶</mark>？”她问。</p>
+          <p>桌上摊着一本旧笔记，旁边压着一封没有寄出的信。灯塔的灯在雾里忽明忽暗。</p>
+        </article>
+      </section>
+
+      <aside class="demo-agent" aria-label="模拟指令区">
+        <label class="field-label" for="instruction">INSTRUCTION / 指令</label>
+        <textarea id="instruction" class="agent-input" rows="4">写她做一杯果茶，端到窗边。</textarea>
+        <div id="material-hits" class="material-hits" aria-live="polite" hidden>
+          <div class="material-hits-head">本次命中 / HARD TRIGGER</div>
+          <div id="material-hit-list"></div>
+        </div>
+        <div id="selected-materials" class="selected-materials" aria-label="已选资料"></div>
+        <div class="quick">
+          <button class="btn ghost small" type="button" id="pick-material">+ 选择资料</button>
+          <button class="btn small" type="button" id="demo-run">演示运行</button>
+        </div>
+        <p class="demo-note">硬触发只做本地精确子串匹配；真正接入时命中资料会强制首轮读取，资料正文不写进书稿。</p>
+        <div class="demo-toast" id="demo-toast" role="status"></div>
+      </aside>
+    </div>
+  </main>
+
+  <dialog id="material-dialog" class="modal modal-wide">
+    <div class="modal-frame">
+      <div class="modal-head">
+        <div>
+          <div class="eyebrow">/// MATERIALS / 资料库</div>
+          <h2>资料</h2>
+        </div>
+        <button class="icon-btn" type="button" data-close="material-dialog" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="material-tools">
+          <input class="input" id="material-search" type="text" placeholder="搜索标题、摘要或触发词">
+          <select class="input" id="kind-filter" aria-label="按类型筛选">
+            <option value="">全部类型</option>
+            <option value="rule">规则</option>
+            <option value="location">地点</option>
+            <option value="character">人物</option>
+            <option value="item">物品</option>
+            <option value="outline">大纲</option>
+          </select>
+          <button class="btn ghost small" type="button" id="material-new">新建</button>
+        </div>
+        <div class="material-layout">
+          <div class="material-list" id="material-list" role="list"></div>
+          <div class="material-detail" id="material-detail">
+            <p>从左侧选择一份资料。</p>
+          </div>
+        </div>
+        <div class="edit-actions">
+          <button class="btn small" type="button" id="material-done">完成</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="material-edit-dialog" class="modal modal-wide">
+    <div class="modal-frame">
+      <div class="modal-head">
+        <div>
+          <div class="eyebrow">/// MATERIAL / 编辑</div>
+          <h2>编辑资料</h2>
+        </div>
+        <button class="icon-btn" type="button" data-close="material-edit-dialog" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="edit-grid">
+          <div>
+            <label class="field-label" for="edit-title">标题 / TITLE</label>
+            <input class="input" id="edit-title" type="text" maxlength="80">
+          </div>
+          <div>
+            <label class="field-label" for="edit-kind">类型 / KIND</label>
+            <select class="input" id="edit-kind">
+              <option value="rule">规则</option>
+              <option value="location">地点</option>
+              <option value="character">人物</option>
+              <option value="item">物品</option>
+              <option value="outline">大纲</option>
+            </select>
+          </div>
+          <div class="span-2">
+            <label class="field-label" for="edit-summary">一句话摘要 / SUMMARY</label>
+            <input class="input" id="edit-summary" type="text" maxlength="160">
+          </div>
+          <div class="span-2">
+            <label class="field-label">触发词 / TRIGGERS</label>
+            <div class="trigger-editor" id="trigger-chips"></div>
+            <div class="trigger-add-row">
+              <input class="input" id="trigger-input" type="text" maxlength="24" placeholder="例如：果茶">
+              <button class="btn ghost small" type="button" id="trigger-add">添加</button>
+              <button class="btn ghost small" type="button" id="trigger-suggest">根据标题生成</button>
+            </div>
+          </div>
+          <div class="span-2">
+            <label class="field-label" for="edit-content">正文 / CONTENT</label>
+            <textarea class="textarea" id="edit-content" rows="8" spellcheck="false"></textarea>
+          </div>
+          <label class="check span-2"><input type="checkbox" id="edit-enabled" checked><span>启用硬触发</span></label>
+        </div>
+        <div class="edit-actions">
+          <button class="btn ghost small" type="button" id="edit-cancel">取消</button>
+          <button class="btn small" type="button" id="edit-save">保存</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <script type="module" src="/material-library/app.js"></script>
+</body>
+</html>

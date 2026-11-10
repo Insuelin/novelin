@@ -1,17 +1,11 @@
 import { Decoration, EditorView, StateField, WidgetType } from '../vendor/codemirror.js';
 import { marked } from '../core/marked.js';
+import { selectionTouches } from '../core/selection.js';
 import DOMPurify from '../vendor/purify.es.js';
 
 const DELIM_CELL = /^:?-{1,}:?$/;
 const FENCE = /^\s*(`{3,}|~{3,})/;
 const LIST_START = /^\s*([-*+>]|\d+[.)])\s/;
-
-function selectionTouches(cs, from, to) {
-  return cs.selection.ranges.some((range) => {
-    if (range.empty) return range.head >= from && range.head <= to;
-    return range.from <= to && range.to >= from;
-  });
-}
 
 function splitRow(text) {
   const cells = [];

@@ -19,6 +19,7 @@ import {
 } from '../vendor/codemirror.js';
 import { livePreview, selectionPlainText, titleBlock } from './editor-live.js';
 import { tableBlocks } from './editor-tables.js';
+import { mathField, mathInlinePreview } from './editor-math.js';
 import { reviewFrameField, setReviewFrame } from './review-decorations.js';
 
 let view = null;
@@ -35,7 +36,7 @@ let revealToken = 0;
 
 const previewCompartment = new Compartment();
 const reviewModeCompartment = new Compartment();
-const previewExtensions = [titleBlock, tableBlocks, livePreview];
+const previewExtensions = [titleBlock, tableBlocks, mathField, mathInlinePreview, livePreview];
 const editableExtensions = [
   EditorView.editable.of(true),
   EditorState.readOnly.of(false),

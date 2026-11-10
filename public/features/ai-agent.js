@@ -10,6 +10,7 @@ import { startReview, clearReview, applyPreviewOp, openProposalReview, buildRevi
 import { updateReviewBar } from './review-view.js';
 import { markSummaryPending, startAppendedSummaries } from './summaries.js';
 import { flushSave } from './persistence.js';
+import { dismissedMaterialIds, selectedMaterialIds } from './materials.js';
 import { bus } from '../core/bus.js';
 
 /* ---------- agent ---------- */
@@ -92,6 +93,7 @@ function toolProgressLabel(name) {
     research: '检索资料…',
     read_outline: '读取大纲…',
     read_notes: '读取设定…',
+    read_materials: '读取资料…',
     edit_manuscript: '应用修改…',
     edit_outline: '修改大纲…',
     append_chapter: '撰写新章…',
@@ -330,6 +332,8 @@ export async function runAi({ action = 'chapter', useSelection = false, plotItem
         instruction,
         model,
         selection,
+        materialIds: selectedMaterialIds(),
+        ignoredMaterialIds: dismissedMaterialIds(),
         ...(action === 'plot' ? { plotItems } : {}),
       }),
       signal: controller.signal,

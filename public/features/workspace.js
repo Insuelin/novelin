@@ -48,6 +48,7 @@ import {
   editorSetScrollTop,
 } from './editor.js';
 import { renderAgent, setAiMode, runAi, stopAi, respondProposal } from './ai-agent.js';
+import { syncMaterials } from './materials.js';
 import { updateBookSummary } from './library.js';
 import { updateTitleDisplay, startTitleEdit, stopTitleEdit, commitTitleEdit, markDirty, saveAll } from './persistence.js';
 
@@ -141,6 +142,7 @@ export function renderWorkspace() {
   renderProse();
   hideSelection();
   renderAgent();
+  syncMaterials();
   applyPendingSearch();
   requestAnimationFrame(syncStickyHeight);
 }

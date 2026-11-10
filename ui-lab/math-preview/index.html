@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>NOVELIN — KaTeX Live Preview</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="/math-preview/demo.css">
+</head>
+<body class="demo-page">
+  <main class="demo-shell">
+    <header class="demo-bar">
+      <div>
+        <div class="eyebrow">NOVELIN / LAB · DEMO A</div>
+        <h1>KaTeX Live Preview</h1>
+        <p>真实 CM6 编辑器加数学扩展。光标离开公式时渲染，进入公式时显示 TeX 源码；点击渲染结果会把光标放回源码。</p>
+      </div>
+      <div class="demo-actions">
+        <button class="btn ghost small" type="button" id="jump-inline">跳到行内公式</button>
+        <button class="btn ghost small" type="button" id="jump-block">跳到块级公式</button>
+        <button class="btn ghost small" type="button" id="jump-code">跳到代码样例</button>
+        <button class="btn small" type="button" id="reset-demo">重置</button>
+      </div>
+    </header>
+
+    <div class="demo-grid">
+      <section class="demo-stage" aria-label="公式编辑器">
+        <div class="demo-stage-head">
+          <span><b>#prose</b> / CODEMIRROR 6</span>
+          <span id="math-status">光标：公式外</span>
+        </div>
+        <article id="prose" class="prose prose-live demo-editor"></article>
+      </section>
+
+      <aside class="demo-side">
+        <h2>试试看 / TRY</h2>
+        <ol>
+          <li>点击行内公式，源码出现，直接改。</li>
+          <li>点到普通文字，公式重新渲染。</li>
+          <li>点击块级公式，多行 TeX 回到源码。</li>
+          <li>货币、行内 code 和 fenced code 里的 <code>$</code> 不应渲染。</li>
+          <li>公式里的 <code>*</code>、<code>_</code> 不应被 Markdown 当成强调。</li>
+        </ol>
+        <div class="demo-status" id="math-selection">SELECTION / —</div>
+      </aside>
+    </div>
+  </main>
+
+  <script type="module" src="/math-preview/app.js"></script>
+</body>
+</html>

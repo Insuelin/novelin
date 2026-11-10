@@ -13,6 +13,7 @@ import {
   flushBriefingDialog,
   wireWorkspaceEvents,
 } from './features/workspace.js';
+import { wireMaterialsEvents } from './features/materials.js';
 import { flushSave, saveAll } from './features/persistence.js';
 
 /* ---------- views ---------- */
@@ -170,6 +171,7 @@ function wireEvents() {
 
   wireLibraryEvents();
   wireWorkspaceEvents();
+  wireMaterialsEvents();
 }
 
 /* ---------- boot ---------- */

@@ -1,4 +1,6 @@
 import { getManuscriptTitle } from '../core/format.js';
+import { rangesOverlap } from '../core/math-scan.js';
+import { selectionTouches } from '../core/selection.js';
 import {
   Decoration,
   EditorView,
@@ -8,6 +10,7 @@ import {
   syntaxTree,
 } from '../vendor/codemirror.js';
 import { findTables, tableAt } from './editor-tables.js';
+import { mathField } from './editor-math.js';
 
 class VoidBlockWidget extends WidgetType {
   toDOM() {
@@ -27,13 +30,6 @@ class VoidBlockWidget extends WidgetType {
   ignoreEvent() {
     return true;
   }
-}
-
-function selectionTouches(cs, from, to) {
-  return cs.selection.ranges.some((range) => {
-    if (range.empty) return range.head >= from && range.head <= to;
-    return range.from <= to && range.to >= from;
-  });
 }
 
 function skipSpaces(doc, pos, limit) {
@@ -71,6 +67,20 @@ function buildDecorations(view) {
   const tree = syntaxTree(cs);
   const ranges = view.visibleRanges.length ? view.visibleRanges : [{ from: 0, to: doc.length }];
   const decorations = [];
+  const mathRanges = view.state.field(mathField, false)?.all || [];
+  const inMath = (from, to) => mathRanges.some((range) => (
+    rangesOverlap(from, to, range.from, range.to)
+  ));
+  const insideMath = (from, to) => mathRanges.some((range) => (
+    from >= range.from && to <= range.to
+  ));
+  const addDecoration = (decoration) => {
+    if (!decoration) return;
+    if (Number.isInteger(decoration.from)
+      && Number.isInteger(decoration.to)
+      && inMath(decoration.from, decoration.to)) return;
+    decorations.push(decoration);
+  };
   const lineMap = new Map();
   const gridTables = findTables(doc).filter((table) => (
     !selectionTouches(cs, table.from, table.to)
@@ -78,11 +88,12 @@ function buildDecorations(view) {
   const firstParagraph = firstDocumentParagraph(cs);
   const firstParagraphVisible = firstParagraph !== null && ranges.some((range) => (
     firstParagraph >= range.from && firstParagraph < range.to
-  ));
+  )) && !inMath(firstParagraph, Math.min(doc.length, firstParagraph + 1));
 
   const addLine = (pos, value, attributes = null) => {
     if (!doc.length) return;
     const line = doc.lineAt(Math.max(0, Math.min(doc.length, pos)));
+    if (insideMath(line.from, line.to)) return;
     let info = lineMap.get(line.from);
     if (!info) {
       info = { classes: new Set(), attributes: {} };
@@ -117,16 +128,16 @@ function buildDecorations(view) {
     const innerTo = close.from;
     if (innerTo <= innerFrom) return;
 
-    decorations.push(Decoration.mark({ class: className }).range(innerFrom, innerTo));
+    addDecoration(Decoration.mark({ class: className }).range(innerFrom, innerTo));
     if (selectionTouches(cs, open.from, innerFrom)) {
-      decorations.push(reveal(open.from, open.to, 'inline', 'open'));
+      addDecoration(reveal(open.from, open.to, 'inline', 'open'));
     } else {
-      decorations.push(hide(open.from, open.to));
+      addDecoration(hide(open.from, open.to));
     }
     if (selectionTouches(cs, innerTo, close.to)) {
-      decorations.push(reveal(close.from, close.to, 'inline', 'close'));
+      addDecoration(reveal(close.from, close.to, 'inline', 'close'));
     } else {
-      decorations.push(hide(close.from, close.to));
+      addDecoration(hide(close.from, close.to));
     }
   };
 
@@ -136,6 +147,7 @@ function buildDecorations(view) {
       to: range.to,
       enter(node) {
         const source = node.node;
+        if (insideMath(node.from, node.to)) return false;
 
         if (/^ATXHeading[1-6]$/.test(node.name)) {
           if (doc.lineAt(node.from).from === hiddenTitleFrom) return;
@@ -148,18 +160,18 @@ function buildDecorations(view) {
           const open = marks[0];
           const contentFrom = skipSpaces(doc, open.to, line.to);
           if (selectionTouches(cs, line.from, contentFrom)) {
-            decorations.push(reveal(line.from, contentFrom, 'heading', 'open', level));
+            addDecoration(reveal(line.from, contentFrom, 'heading', 'open', level));
           } else {
-            decorations.push(hide(line.from, contentFrom));
+            addDecoration(hide(line.from, contentFrom));
           }
 
           if (marks.length > 1) {
             const close = marks[marks.length - 1];
             const closeFrom = trimSpacesBefore(doc, close.from, open.to);
             if (selectionTouches(cs, closeFrom, line.to)) {
-              decorations.push(reveal(closeFrom, line.to, 'heading', 'close', level));
+              addDecoration(reveal(closeFrom, line.to, 'heading', 'close', level));
             } else {
-              decorations.push(hide(closeFrom, line.to));
+              addDecoration(hide(closeFrom, line.to));
             }
           }
           return;
@@ -172,9 +184,9 @@ function buildDecorations(view) {
           addLine(headingLine.from, `cm-md-heading cm-md-h${level}`);
           addLine(underlineLine.from, 'cm-md-setext-underline');
           if (selectionTouches(cs, underlineLine.from, underlineLine.to)) {
-            decorations.push(reveal(underlineLine.from, underlineLine.to, 'setext', 'open', level));
+            addDecoration(reveal(underlineLine.from, underlineLine.to, 'setext', 'open', level));
           } else {
-            decorations.push(hide(underlineLine.from, underlineLine.to));
+            addDecoration(hide(underlineLine.from, underlineLine.to));
           }
           return;
         }
@@ -207,23 +219,23 @@ function buildDecorations(view) {
           if (open.from !== node.from || close.from <= open.to) return;
           const innerFrom = open.to;
           const innerTo = close.from;
-          decorations.push(Decoration.mark({ class: 'cm-md-link' }).range(innerFrom, innerTo));
+          addDecoration(Decoration.mark({ class: 'cm-md-link' }).range(innerFrom, innerTo));
           if (selectionTouches(cs, open.from, innerFrom)) {
-            decorations.push(reveal(open.from, open.to, 'inline', 'open'));
+            addDecoration(reveal(open.from, open.to, 'inline', 'open'));
           } else {
-            decorations.push(hide(open.from, open.to));
+            addDecoration(hide(open.from, open.to));
           }
           if (selectionTouches(cs, innerTo, node.to)) {
-            decorations.push(reveal(close.from, node.to, 'inline', 'close'));
+            addDecoration(reveal(close.from, node.to, 'inline', 'close'));
           } else {
-            decorations.push(hide(close.from, node.to));
+            addDecoration(hide(close.from, node.to));
           }
           return;
         }
 
         if (node.name === 'URL' && source.parent?.name === 'Paragraph') {
           if (node.to > node.from) {
-            decorations.push(Decoration.mark({ class: 'cm-md-link' }).range(node.from, node.to));
+            addDecoration(Decoration.mark({ class: 'cm-md-link' }).range(node.from, node.to));
           }
           return;
         }
@@ -249,9 +261,9 @@ function buildDecorations(view) {
           const contentFrom = skipSpaces(doc, mark.to, itemFirstLine.to);
           if (selectionTouches(cs, mark.from, contentFrom)) {
             addLine(itemFirstLine.from, 'cm-md-li-open');
-            decorations.push(reveal(mark.from, contentFrom, 'list', 'open'));
+            addDecoration(reveal(mark.from, contentFrom, 'list', 'open'));
           } else {
-            decorations.push(hide(mark.from, contentFrom));
+            addDecoration(hide(mark.from, contentFrom));
           }
           return;
         }
@@ -270,9 +282,9 @@ function buildDecorations(view) {
           const contentFrom = skipSpaces(doc, node.to, line.to);
           addLine(line.from, 'cm-md-quote');
           if (selectionTouches(cs, line.from, contentFrom)) {
-            decorations.push(reveal(line.from, contentFrom, 'quote', 'open'));
+            addDecoration(reveal(line.from, contentFrom, 'quote', 'open'));
           } else {
-            decorations.push(hide(line.from, contentFrom));
+            addDecoration(hide(line.from, contentFrom));
           }
           return;
         }
@@ -288,9 +300,9 @@ function buildDecorations(view) {
           const line = doc.lineAt(node.from);
           addLine(line.from, 'cm-md-table-sep');
           if (selectionTouches(cs, line.from, line.to)) {
-            decorations.push(reveal(line.from, line.to, 'table', 'open'));
+            addDecoration(reveal(line.from, line.to, 'table', 'open'));
           } else {
-            decorations.push(hide(line.from, line.to));
+            addDecoration(hide(line.from, line.to));
           }
           return;
         }
@@ -308,9 +320,9 @@ function buildDecorations(view) {
             const openLine = doc.lineAt(open.from);
             addLine(openLine.from, 'cm-md-fence');
             if (selectionTouches(cs, openLine.from, openLine.to)) {
-              decorations.push(reveal(openLine.from, openLine.to, 'fence', 'open'));
+              addDecoration(reveal(openLine.from, openLine.to, 'fence', 'open'));
             } else {
-              decorations.push(hide(openLine.from, openLine.to));
+              addDecoration(hide(openLine.from, openLine.to));
             }
 
             if (marks.length > 1) {
@@ -318,9 +330,9 @@ function buildDecorations(view) {
               const closeLine = doc.lineAt(close.from);
               addLine(closeLine.from, 'cm-md-fence');
               if (selectionTouches(cs, closeLine.from, closeLine.to)) {
-                decorations.push(reveal(closeLine.from, closeLine.to, 'fence', 'close'));
+                addDecoration(reveal(closeLine.from, closeLine.to, 'fence', 'close'));
               } else {
-                decorations.push(hide(closeLine.from, closeLine.to));
+                addDecoration(hide(closeLine.from, closeLine.to));
               }
             }
           }
@@ -334,13 +346,13 @@ function buildDecorations(view) {
     addLine(firstParagraph, 'cm-md-lead');
     const firstChar = doc.sliceString(firstParagraph, Math.min(doc.length, firstParagraph + 1));
     if (firstChar && /[\p{L}\p{N}]/u.test(firstChar)) {
-      decorations.push(Decoration.mark({ class: 'cm-md-dropcap' }).range(firstParagraph, firstParagraph + 1));
+      addDecoration(Decoration.mark({ class: 'cm-md-dropcap' }).range(firstParagraph, firstParagraph + 1));
     }
   }
 
   for (const [from, info] of lineMap) {
     const attributes = Object.keys(info.attributes).length ? info.attributes : undefined;
-    decorations.push(Decoration.line({
+    addDecoration(Decoration.line({
       class: [...info.classes].join(' '),
       attributes,
     }).range(from));

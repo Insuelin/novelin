@@ -8,6 +8,7 @@ import { createAiClient } from './lib/ai.js';
 import { createDebugLog } from './lib/debug-log.js';
 import { runAgent, summarizeChapter } from './lib/agent.js';
 import { runAudit } from './lib/audit.js';
+import { analyzeMaterial } from './lib/material-keywords.js';
 import { applyDecisions, applyOps, listProposals, getProposal, setProposalStatus } from './lib/proposals.js';
 import { normalizeAgentSettings } from './lib/agent-settings.js';
 import { parseChapters } from './lib/chapters.js';
@@ -139,8 +140,7 @@ export function createApp({ dataDir, aiClient } = {}) {
     }
 
     const rawPlotItems = Array.isArray(body.plotItems) ? body.plotItems.slice(0, 8) : [];
-    const plotItems = [];
-    if (action === 'plot') {
+    const plotItems = [];    if (action === 'plot') {
       if (!rawPlotItems.length) {
         return res.status(400).json({ error: 'plotItems 不能为空' });
       }
@@ -190,6 +190,32 @@ export function createApp({ dataDir, aiClient } = {}) {
       }
     }
 
+    if (body.materialIds !== undefined && !Array.isArray(body.materialIds)) {
+      return res.status(400).json({ error: 'materialIds 必须是数组' });
+    }
+    if (Array.isArray(body.materialIds) && body.materialIds.length > 8) {
+      return res.status(400).json({ error: '一次最多手动加入 8 份资料' });
+    }
+    const knownMaterialIds = new Set(
+      (Array.isArray(book.materials) ? book.materials : [])
+        .filter((material) => material.enabled !== false)
+        .map((material) => material.id),
+    );
+    const materialIds = [...new Set(
+      (Array.isArray(body.materialIds) ? body.materialIds : [])
+        .map((id) => String(id || '').trim())
+        .filter((id) => knownMaterialIds.has(id)),
+    )];
+    if (body.ignoredMaterialIds !== undefined && !Array.isArray(body.ignoredMaterialIds)) {
+      return res.status(400).json({ error: 'ignoredMaterialIds 必须是数组' });
+    }
+    const ignoredMaterialIds = [...new Set(
+      (Array.isArray(body.ignoredMaterialIds) ? body.ignoredMaterialIds : [])
+        .map((id) => String(id || '').trim())
+        .filter(Boolean)
+        .slice(0, 100),
+    )];
+
     const settings = normalizeAgentSettings(book.meta);
     const finalInstruction = action === 'chapter' ? buildChapterInstruction(instruction) : instruction;
 
@@ -216,6 +242,8 @@ export function createApp({ dataDir, aiClient } = {}) {
         : null,
       plotItems: plotItems.length,
       plotDropped: action === 'plot' ? rawPlotItems.length - plotItems.length : 0,
+      materialIds,
+      ignoredMaterialIds,
     });
 
     res.status(200);
@@ -250,6 +278,8 @@ export function createApp({ dataDir, aiClient } = {}) {
       reasoningEffort: settings.reasoningEffort,
       plotItems: plotItems.length,
       plotDropped: action === 'plot' ? rawPlotItems.length - plotItems.length : 0,
+      materials: materialIds.length,
+      materialsIgnored: ignoredMaterialIds.length,
     });
 
     try {
@@ -262,6 +292,8 @@ export function createApp({ dataDir, aiClient } = {}) {
         action,
         selection,
         plotItems,
+        materialIds,
+        ignoredMaterialIds,
         model,
         maxTokens: settings.maxTokens,
         maxSteps: settings.maxSteps,
@@ -364,6 +396,101 @@ export function createApp({ dataDir, aiClient } = {}) {
         version: 2,
         chapters: book.summaries.map(publicSummary),
       });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  app.get('/api/books/:id/materials', async (req, res, next) => {
+    try {
+      const book = await store.getBook(req.params.id);
+      if (!book) return res.status(404).json({ error: '书籍不存在' });
+      return res.json({ materials: book.materials });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  app.post('/api/books/:id/materials', async (req, res, next) => {
+    try {
+      const input = req.body?.material && typeof req.body.material === 'object'
+        ? req.body.material
+        : (req.body || {});
+      const material = await store.createMaterial(req.params.id, input);
+      return res.status(201).json({ material });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  const analyzeMaterialHandler = async (req, res, next) => {
+    let controller = null;
+    try {
+      const book = await store.getBook(req.params.id);
+      if (!book) return res.status(404).json({ error: '书籍不存在' });
+      if (!book.meta.aiEnabled) return res.status(400).json({ error: '这本书没有开启 AI' });
+
+      const title = String(req.body?.title || '').trim();
+      if (!title) return res.status(400).json({ error: '标题不能为空' });
+      const summary = String(req.body?.summary || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+      const content = String(req.body?.content || '').replace(/\r\n?/g, '\n').slice(0, 12000);
+
+      const settings = normalizeAgentSettings(book.meta);
+      controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
+      const onClose = () => controller.abort();
+      res.on('close', onClose);
+      try {
+        const analysis = await analyzeMaterial({
+          ai,
+          model: settings.researchModel,
+          title,
+          summary,
+          content,
+          signal: controller.signal,
+        });
+        debugLog.log('materials.analyze', {
+          bookId: book.meta.id,
+          model: settings.researchModel,
+          summaryChars: analysis.summary.length,
+          triggers: analysis.triggers.length,
+        });
+        return res.json({
+          summary: analysis.summary,
+          triggers: analysis.triggers,
+          model: settings.researchModel,
+        });
+      } finally {
+        clearTimeout(timeout);
+        res.off('close', onClose);
+      }
+    } catch (err) {
+      if (controller?.signal.aborted && !res.writableEnded) {
+        return res.status(504).json({ error: '资料整理子代理超时或已取消' });
+      }
+      return next(err);
+    }
+  };
+
+  app.post('/api/books/:id/materials/analyze', analyzeMaterialHandler);
+  app.post('/api/books/:id/materials/suggest-triggers', analyzeMaterialHandler);
+
+  app.put('/api/books/:id/materials/:mid', async (req, res, next) => {
+    try {
+      const input = req.body?.material && typeof req.body.material === 'object'
+        ? req.body.material
+        : (req.body || {});
+      const material = await store.updateMaterial(req.params.id, req.params.mid, input);
+      return res.json({ material });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  app.delete('/api/books/:id/materials/:mid', async (req, res, next) => {
+    try {
+      const result = await store.deleteMaterial(req.params.id, req.params.mid);
+      return res.json(result);
     } catch (err) {
       return next(err);
     }

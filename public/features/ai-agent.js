@@ -201,7 +201,16 @@ function handleAiEvent(type, payload = {}) {
 
   if (type === 'error') {
     setAiState('ERROR', 'error');
-    toast(payload.message || 'AI 运行失败', 'error');
+    const message = payload.message || 'AI 运行失败';
+    toast(message, 'error');
+    aiLog('ERR', message, 'err');
+    const meta = [
+      payload.code ? `code=${payload.code}` : '',
+      payload.model ? `model=${payload.model}` : '',
+      Number.isFinite(payload.elapsedMs) ? `用时=${(payload.elapsedMs / 1000).toFixed(1)}s` : '',
+      payload.runId ? `run=${payload.runId}` : '',
+    ].filter(Boolean).join(' · ');
+    if (meta) aiLog('DETAIL', meta, 'err');
     if (payload.detail) aiLog('DETAIL', payload.detail, 'err');
     if (!state.aiProposal) clearReview();
     return;

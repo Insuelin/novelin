@@ -10,6 +10,7 @@ import { renderAgentSettings } from './ai-controls.js';
 const SUMMARY_TAG_LABELS = { characters: '人物', locations: '地点', items: '道具', hooks: '伏笔' };
 const SUMMARY_CONCURRENCY = 5;
 const SUMMARY_STALE_CONCURRENCY = 4;
+const SUMMARY_APPEND_CONCURRENCY = 2;
 const SUMMARY_RETRY_DELAY = 700;
 
 function summaryRunMap(bookId, create = false) {
@@ -104,8 +105,24 @@ export function markSummaryPending(bookId, chapters) {
 }
 
 export function startAppendedSummaries(bookId, chapters) {
-  Promise.all(chapters.map((chapter) => generateSummaryForChapter(bookId, chapter)))
-    .catch(() => {});
+  const targets = (Array.isArray(chapters) ? chapters : [])
+    .filter((chapter) => Number.isInteger(chapter?.index));
+  if (!targets.length) return;
+  let cursor = 0;
+  const worker = async () => {
+    for (;;) {
+      const at = cursor;
+      cursor += 1;
+      if (at >= targets.length) return;
+      await generateSummaryForChapter(bookId, targets[at]);
+    }
+  };
+  Promise.all(
+    Array.from(
+      { length: Math.min(SUMMARY_APPEND_CONCURRENCY, targets.length) },
+      () => worker(),
+    ),
+  ).catch(() => {});
 }
 
 async function generateSummaryForChapter(bookId, chapter) {
@@ -116,10 +133,11 @@ async function generateSummaryForChapter(bookId, chapter) {
   }
 
   try {
-    const { summary } = await api(`/books/${encodeURIComponent(bookId)}/summaries/generate`, {
+    const generated = await api(`/books/${encodeURIComponent(bookId)}/summaries/generate`, {
       method: 'POST',
       body: { index: chapter.index },
     });
+    const summary = generated.summary;
 
     if (state.current?.meta.id === bookId) {
       const latest = state.summaryChapters.find((entry) => entry.index === chapter.index);
@@ -144,6 +162,12 @@ async function generateSummaryForChapter(bookId, chapter) {
       setSummaryRun(bookId, chapter.index, null);
       if (state.summaryBookId === bookId && $('#summary-dialog')?.open) renderSummaryList();
       aiLog('OK', `第 ${chapter.index} 章摘要已生成`, 'ok');
+      if (generated.degraded) {
+        const detail = generated.mapFailures
+          ? `${generated.mapFailures} 个片段使用原文摘录兜底`
+          : '章节很长，摘要按大块合并';
+        aiLog('WARN', `第 ${chapter.index} 章摘要：${detail}`, 'warn');
+      }
     }
   } catch (err) {
     setSummaryRun(bookId, chapter.index, {

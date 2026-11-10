@@ -300,9 +300,19 @@ export function createApp({ dataDir, aiClient } = {}) {
         message: err.message || 'AI 运行失败',
         stack: String(err.stack || '').slice(0, 8000),
       }, 'error');
+      const timedOut = err?.name === 'TimeoutError'
+        || /aborted due to timeout/i.test(String(err?.message || ''));
+      const message = timedOut && !err.code
+        ? `模型 ${model || '未知'} 在超时时间内没有返回数据`
+        : (err.message || 'AI 运行失败');
       send('error', {
-        message: err.message || 'AI 运行失败',
+        message,
         detail: err.stack ? String(err.stack).split('\n')[0] : undefined,
+        code: err.code || (timedOut ? 'AI_TIMEOUT' : undefined),
+        retryable: Boolean(err.retryable || timedOut),
+        runId,
+        model,
+        elapsedMs: Date.now() - runStartedAt,
       });
     } finally {
       res.off('close', onClose);
@@ -469,7 +479,12 @@ export function createApp({ dataDir, aiClient } = {}) {
       };
 
       await store.upsertSummary(req.params.id, entry);
-      return res.json({ summary: entry });
+      return res.json({
+        summary: entry,
+        degraded: Boolean(generated.degraded),
+        chunks: generated.chunks || 1,
+        mapFailures: generated.mapFailures || 0,
+      });
     } catch (err) {
       return next(err);
     }

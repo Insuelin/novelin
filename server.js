@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './lib/store.js';
 import { searchBooks } from './lib/search.js';
-import { createAiClient } from './lib/ai.js';
+import { createAiClient, sessionIdForBook } from './lib/ai.js';
 import { createDebugLog } from './lib/debug-log.js';
 import { runAgent, summarizeChapter } from './lib/agent.js';
 import { runAudit } from './lib/audit.js';
@@ -35,6 +35,13 @@ function publicSummary(entry) {
   if (!entry) return null;
   const { stale, orphan, ...rest } = entry;
   return rest;
+}
+
+function aiForBook(ai, book) {
+  const sessionId = sessionIdForBook(book?.meta?.id);
+  return sessionId && typeof ai?.withSession === 'function'
+    ? ai.withSession(sessionId)
+    : ai;
 }
 
 export function buildChapterInstruction(extra = '') {
@@ -286,7 +293,7 @@ export function createApp({ dataDir, aiClient } = {}) {
       const result = await runAgent({
         store,
         book,
-        ai,
+        ai: aiForBook(ai, book),
         instruction: finalInstruction,
         mode,
         action,
@@ -442,7 +449,7 @@ export function createApp({ dataDir, aiClient } = {}) {
       res.on('close', onClose);
       try {
         const analysis = await analyzeMaterial({
-          ai,
+          ai: aiForBook(ai, book),
           model: settings.researchModel,
           title,
           summary,
@@ -585,7 +592,7 @@ export function createApp({ dataDir, aiClient } = {}) {
       let generated = null;
       try {
         generated = await summarizeChapter({
-          ai,
+          ai: aiForBook(ai, book),
           title: chapter.title,
           body,
           terms: book.meta?.terms || [],
@@ -672,7 +679,7 @@ export function createApp({ dataDir, aiClient } = {}) {
         let result;
         try {
           result = await runAudit({
-            ai,
+            ai: aiForBook(ai, book),
             model: settings.researchModel,
             book,
             state,

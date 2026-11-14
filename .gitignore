@@ -14,3 +14,11 @@ ui-lab/ref/
 *.log
 .DS_Store
 Thumbs.db
+
+# private notes and test scripts
+docs/
+test/
+ui-lab/**/tests/
+
+# diagnostic proxy, not ready to publish
+scripts/opencode-proxy.mjs

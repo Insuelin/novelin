@@ -4,7 +4,12 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './lib/store.js';
 import { searchBooks } from './lib/search.js';
-import { createAiClient, sessionIdForBook } from './lib/ai.js';
+import {
+  createAiClient,
+  sessionIdForBook,
+  subagentSessionIdForBook,
+  summarySessionIdForBook,
+} from './lib/ai.js';
 import { createDebugLog } from './lib/debug-log.js';
 import { runAgent, summarizeChapter } from './lib/agent.js';
 import { runAudit } from './lib/audit.js';
@@ -44,6 +49,20 @@ function aiForBook(ai, book) {
     : ai;
 }
 
+function aiForSubagent(ai, book) {
+  const sessionId = subagentSessionIdForBook(book?.meta?.id);
+  return sessionId && typeof ai?.withSession === 'function'
+    ? ai.withSession(sessionId)
+    : ai;
+}
+
+function aiForSummary(ai, book) {
+  const sessionId = summarySessionIdForBook(book?.meta?.id);
+  return sessionId && typeof ai?.withSession === 'function'
+    ? ai.withSession(sessionId)
+    : ai;
+}
+
 export function buildChapterInstruction(extra = '') {
   const fixed = '写下一章，承接前文。';
   const value = String(extra || '').trim().slice(0, 8000);
@@ -51,7 +70,12 @@ export function buildChapterInstruction(extra = '') {
   return `${fixed}\n\n【补充要求】\n${value}\n\n如果补充要求与整章正文的格式规则冲突，以整章正文的格式规则为准。`;
 }
 
-export function createApp({ dataDir, aiClient } = {}) {
+export function createApp({
+  dataDir,
+  aiClient,
+  toolTurnDelayMs = 0,
+  firstTurnDelayMs = 0,
+} = {}) {
   const resolvedDataDir = dataDir || process.env.DATA_DIR || path.join(__dirname, 'data');
   const store = createStore(resolvedDataDir);
   const debugLog = createDebugLog({ dir: path.join(resolvedDataDir, 'logs') });
@@ -294,6 +318,8 @@ export function createApp({ dataDir, aiClient } = {}) {
         store,
         book,
         ai: aiForBook(ai, book),
+        subagentAi: aiForSubagent(ai, book),
+        summaryAi: aiForSummary(ai, book),
         instruction: finalInstruction,
         mode,
         action,
@@ -306,6 +332,8 @@ export function createApp({ dataDir, aiClient } = {}) {
         maxSteps: settings.maxSteps,
         reasoningEffort: settings.reasoningEffort,
         researchModel: settings.researchModel,
+        toolTurnDelayMs,
+        firstTurnDelayMs,
         signal: controller.signal,
         onEvent: (event) => send(event.type, event),
       });
@@ -449,7 +477,7 @@ export function createApp({ dataDir, aiClient } = {}) {
       res.on('close', onClose);
       try {
         const analysis = await analyzeMaterial({
-          ai: aiForBook(ai, book),
+          ai: aiForSubagent(ai, book),
           model: settings.researchModel,
           title,
           summary,
@@ -592,7 +620,7 @@ export function createApp({ dataDir, aiClient } = {}) {
       let generated = null;
       try {
         generated = await summarizeChapter({
-          ai: aiForBook(ai, book),
+          ai: aiForSummary(ai, book),
           title: chapter.title,
           body,
           terms: book.meta?.terms || [],
@@ -679,7 +707,7 @@ export function createApp({ dataDir, aiClient } = {}) {
         let result;
         try {
           result = await runAudit({
-            ai: aiForBook(ai, book),
+            ai: aiForSubagent(ai, book),
             model: settings.researchModel,
             book,
             state,
@@ -907,12 +935,27 @@ if (isMain) {
   const host = process.env.HOST || '127.0.0.1';
   const port = Number(process.env.PORT || 4173);
   const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
-  const { app, debugLog } = createApp({ dataDir });
+  const toolTurnDelayMs = process.env.NOVELIN_TOOL_TURN_DELAY_MS !== undefined
+    ? Number(process.env.NOVELIN_TOOL_TURN_DELAY_MS)
+    : 2000;
+  const firstTurnDelayMs = process.env.NOVELIN_FIRST_TURN_DELAY_MS !== undefined
+    ? Number(process.env.NOVELIN_FIRST_TURN_DELAY_MS)
+    : 0;
+  const { app, debugLog } = createApp({ dataDir, toolTurnDelayMs, firstTurnDelayMs });
 
   app.listen(port, host, () => {
     console.log(`NOVELIN ${VERSION}`);
     console.log(`API  http://${host}:${port}/api/health`);
     console.log(`DATA ${dataDir}`);
-    debugLog.log('server.start', { host, port, dataDir, version: VERSION });
+    console.log(`TOOL TURN DELAY ${toolTurnDelayMs}ms`);
+    console.log(`FIRST TURN DELAY ${firstTurnDelayMs}ms`);
+    debugLog.log('server.start', {
+      host,
+      port,
+      dataDir,
+      version: VERSION,
+      toolTurnDelayMs,
+      firstTurnDelayMs,
+    });
   });
 }

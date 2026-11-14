@@ -18,7 +18,7 @@ Thumbs.db
 # private notes and test scripts
 docs/
 test/
-ui-lab/**/tests/
+ui-lab/
 
 # diagnostic proxy, not ready to publish
 scripts/opencode-proxy.mjs

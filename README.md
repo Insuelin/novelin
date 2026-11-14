@@ -1,6 +1,6 @@
 # novelin
 
-本地 AI 小说写作终端。Node.js + Express，正文编辑用 CodeMirror 6，数据全部保存在本地。
+本地 AI 小说写作终端。参考现代hardness，采取给模型暴露工具阅读长文本内容和生成摘要进行下一章写作的方式来大量节约token并提升指令遵循能力。 Node.js + Express，正文编辑用 CodeMirror 6，数据全部保存在本地。
 
 ## 功能
 
